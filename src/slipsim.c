@@ -232,8 +232,9 @@ void recenter_constraints(polygroup1*const RSTRCT pg, const size_t p_index) {
 }
 
 int create_constraint(polygroup1*const RSTRCT pg, const size_t p_index, \
-  const ssize_t c_index) {
+  const ssize_t c_index, const coord*const RSTRCT coords_in) {
 	assert(pg);
+	assert(coords_in);
 	assert(p_index < pg->p_count);
 	assert(c_index <= pg->c_count[p_index]);
 	assert(pg->c_count[p_index] < MAX_C_COUNT);
@@ -246,14 +247,41 @@ int create_constraint(polygroup1*const RSTRCT pg, const size_t p_index, \
 	  pg->c_allocated[p_index])) {
 		recenter_constraints(pg, p_index);
 	}
+	size_t address;
 	switch (c_index) {
 		case 0:
+			--(pg->c_start[p_index]);
+			address = pg->c_start[p_index];
 			break;
 		case -1:
+			address = pg->c_start[p_index] + pg->c_count[p_index];
 			break;
-		default:
+		default: {
+			address = pg->c_start[p_index] + c_index;
+			const size_t half_count = (pg->c_count[p_index])/2;
+			if (c_index > half_count) {
+				coord*const r_ptr = pg->r_coords[p_index] + 3*address;
+				coord*const n_ptr = pg->n_coords[p_index] + address;
+				const size_t move_count = pg->c_count[p_index] - c_index;
+				memmove(r_ptr + 3, r_ptr, move_count*three_coord_size);
+				memmove(n_ptr + 1, n_ptr, move_count*coord_size);
+			}
+			else {
+				--(pg->c_start[p_index]);
+				coord*const r_ptr = \
+				  pg->r_coords[p_index] + 3*(pg->c_start[p_index]);
+				coord*const n_ptr = \
+				  pg->n_coords[p_index] + pg->c_start[p_index];
+				const size_t move_count = c_index - pg->c_start[p_index];
+				memmove(r_ptr - 3, r_ptr, move_count*three_coord_size);
+				memmove(n_ptr - 1, n_ptr, move_count*coord_size);
+			}
 			break;
+		}
 	}
+	memcpy(pg->r_coords + 3*address, coords_in, three_coord_size);
+	pg->n_coords[p_index][address] = coords_in[3];
+	++(pg->c_count[p_index]);
 	return 0;
 }
 
