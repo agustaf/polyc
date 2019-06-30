@@ -1,9 +1,10 @@
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <math.h>
-#include <assert.h>
+#include <float.h>
 #include "gsl/gsl_rng.h"
 #include "gsl/gsl_randist.h"
 
@@ -11,9 +12,21 @@
 #define MAX_C_ALLOC 16384
 #define MAX_C_COUNT 8192
 #define ALLOC_INCREASE_FACTOR 2
-#define REALLOC_THRESHOLD 2.0
+#define REALLOC_THRESHOLD 0.5
 #define INITIAL_C_ALLOC 1024
+#define ENABLE_REALLOC 1
+#define LEFT_ALIGN 0
 #define KEEP_C_LIFETIMES 1
+
+#define ARC_MAX 100.0
+#define ALPHA 10.0
+#define ARC_CREATE_INTERVAL 10.0
+#define MONOMER_LENGTH 1.0
+//Below is Sqrt(2 kb T / zeta)
+#define ARC_DIFFUSE_VARIANCE_FACTOR1 0.01
+//Below is b/Sqrt(3), it is not adjustable.
+#define SPACE_STDDEV MONOMER_LENGTH*0.5773502691896258
+
 
 const size_t size_t_size = sizeof(size_t);
 const size_t double_size = sizeof(double);
@@ -27,6 +40,9 @@ typedef struct rand_buffer {
 } rand_buffer;
 
 const size_t rand_buffer_size = sizeof(rand_buffer);
+
+rand_buffer* global_flat_rbuf;
+rand_buffer* global_gaussian_rbuf;
 
 void allocate_rand_buffer(rand_buffer*const RSTRCT rbuf, const size_t size) {
 	assert(rbuf);
@@ -71,34 +87,31 @@ void fill_rand_buffer_gaussian(rand_buffer*const RSTRCT rbuf) {
 	return;
 }
 
-double rand_flat(rand_buffer*const RSTRCT rbuf) {
-	assert(rbuf);
-	assert(rbuf->buffer);
-	assert(rbuf->buffer_size > 0);
-	switch (rbuf->position) {
-		case -1:
-			fill_rand_buffer_flat(rbuf);
-			break;
+double rand_flat(void) {
+	assert(global_flat_rbuf);
+	assert(global_flat_rbuf->buffer);
+	assert(global_flat_rbuf->buffer_size > 0);
+	if (global_flat_rbuf->position == -1) {
+		fill_rand_buffer_flat(global_flat_rbuf);
 	}
-	return rbuf->buffer[(rbuf->position)--];
+	return global_flat_rbuf->buffer[(global_flat_rbuf->position)--];
 }
 
-double rand_gaussian(rand_buffer*const RSTRCT rbuf) {
-	assert(rbuf);
-	assert(rbuf->buffer);
-	assert(rbuf->buffer_size > 0);
-	switch (rbuf->position) {
-		case -1:
-			fill_rand_buffer_gaussian(rbuf);
-			break;
+double rand_gaussian(void) {
+	assert(global_gaussian_rbuf);
+	assert(global_gaussian_rbuf->buffer);
+	assert(global_gaussian_rbuf->buffer_size > 0);
+	if (global_gaussian_rbuf->position == -1) {
+		fill_rand_buffer_gaussian(global_gaussian_rbuf);
 	}
-	return rbuf->buffer[(rbuf->position)--];
+	return global_gaussian_rbuf->buffer[(global_gaussian_rbuf->position)--];
 }
 
 typedef double coord;
 const size_t coord_size = sizeof(coord);
 const size_t three_coord_size = 3*coord_size;
 const size_t coord_ptr_size = sizeof(coord*);
+#define coord_min DBL_TRUE_MIN
 
 typedef ssize_t t_index;
 const size_t t_index_size = sizeof(t_index);
@@ -111,16 +124,16 @@ typedef struct polygroup1 {
 	size_t* c_start;
 	size_t* c_allocated;
 	size_t p_count;
-	#if KEEP_C_LIFETIMES == 1
 	t_index tsteps;
+	#if KEEP_C_LIFETIMES == 1
 	t_index** life_tsteps;
 	#endif
 } polygroup1;
 
 const size_t polygroup1_size = sizeof(polygroup1);
 
-void alloc_polygroup1(polygroup1*const RSTRCT pg, const size_t poly_count_in, \
-  const size_t c_allocated_in) {
+void alloc_polygroup1(polygroup1*const RSTRCT pg, const size_t poly_count_in,
+                      const size_t c_allocated_in) {
 	assert(pg);
 	assert(poly_count_in > 0);
 	assert(c_allocated_in > 0);
@@ -194,23 +207,6 @@ void free_polygroup1(polygroup1*const RSTRCT pg) {
 	return;
 }
 
-void increase_c_alloc(polygroup1*const RSTRCT pg, const size_t p_index) {
-	assert(pg);
-	assert(pg->c_allocated);
-	const size_t new_alloc = ALLOC_INCREASE_FACTOR*pg->c_allocated[p_index];
-	assert(new_alloc <= MAX_C_ALLOC);
-	pg->r_coords[p_index] = \
-	  (coord*) realloc(pg->r_coords[p_index], new_alloc*three_coord_size);
-	pg->n_coords[p_index] = \
-  	  (coord*) realloc(pg->n_coords[p_index], new_alloc*coord_size);
-	#if KEEP_C_LIFETIMES == 1
-	pg->life_tsteps[p_index] = \
-	  (t_index*) realloc(pg->life_tsteps[p_index], new_alloc*t_index_size);
-	#endif
-	pg->c_allocated[p_index] = new_alloc;
-	return;
-}
-
 void recenter_constraints(polygroup1*const RSTRCT pg, const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
@@ -231,105 +227,266 @@ void recenter_constraints(polygroup1*const RSTRCT pg, const size_t p_index) {
 	return;
 }
 
-int create_constraint(polygroup1*const RSTRCT pg, const size_t p_index, \
-  const ssize_t c_index, const coord*const RSTRCT coords_in) {
-	assert(pg);
-	assert(coords_in);
-	assert(p_index < pg->p_count);
-	assert(c_index <= pg->c_count[p_index]);
-	assert(pg->c_count[p_index] < MAX_C_COUNT);
-	if (((double) (pg->c_count[p_index] + 1)) > \
-	  ((double) pg->c_allocated[p_index])/REALLOC_THRESHOLD) {
-		increase_c_alloc(pg, p_index);
-	}
+void recenter_constraints_if_needed(polygroup1*const RSTRCT pg, \
+                                    const size_t p_index) {
 	if ((pg->c_start[p_index] == 0) || \
 	  (pg->c_start[p_index] + pg->c_count[p_index] == \
 	  pg->c_allocated[p_index])) {
 		recenter_constraints(pg, p_index);
 	}
-	size_t address;
-	switch (c_index) {
-		case 0:
-			--(pg->c_start[p_index]);
-			address = pg->c_start[p_index];
-			break;
-		case -1:
-			address = pg->c_start[p_index] + pg->c_count[p_index];
-			break;
-		default: {
-			address = pg->c_start[p_index] + c_index;
-			const size_t half_count = (pg->c_count[p_index])/2;
-			if (c_index > half_count) {
-				coord*const r_ptr = pg->r_coords[p_index] + 3*address;
-				coord*const n_ptr = pg->n_coords[p_index] + address;
-				const size_t move_count = pg->c_count[p_index] - c_index;
-				memmove(r_ptr + 3, r_ptr, move_count*three_coord_size);
-				memmove(n_ptr + 1, n_ptr, move_count*coord_size);
-			}
-			else {
-				--(pg->c_start[p_index]);
-				coord*const r_ptr = \
-				  pg->r_coords[p_index] + 3*(pg->c_start[p_index]);
-				coord*const n_ptr = \
-				  pg->n_coords[p_index] + pg->c_start[p_index];
-				const size_t move_count = c_index - pg->c_start[p_index];
-				memmove(r_ptr - 3, r_ptr, move_count*three_coord_size);
-				memmove(n_ptr - 1, n_ptr, move_count*coord_size);
-			}
-			break;
-		}
+	return;
+}
+
+#if ENABLE_REALLOC == 1
+void increase_c_alloc(polygroup1*const RSTRCT pg, const size_t p_index) {
+	assert(pg);
+	assert(pg->c_allocated);
+	const size_t new_alloc = ALLOC_INCREASE_FACTOR*pg->c_allocated[p_index];
+	assert(new_alloc <= MAX_C_ALLOC);
+	pg->r_coords[p_index] = \
+	  (coord*) realloc(pg->r_coords[p_index], new_alloc*three_coord_size);
+	pg->n_coords[p_index] = \
+  	  (coord*) realloc(pg->n_coords[p_index], new_alloc*coord_size);
+	#if KEEP_C_LIFETIMES == 1
+	pg->life_tsteps[p_index] = \
+	  (t_index*) realloc(pg->life_tsteps[p_index], new_alloc*t_index_size);
+	#endif
+	pg->c_allocated[p_index] = new_alloc;
+	return;
+}
+
+static inline int realloc_if_needed(polygroup1*const RSTRCT pg,
+                                    const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	int performed_realloc = 0;
+	if (((double) (pg->c_count[p_index] + 1)) > \
+	  ((double) pg->c_allocated[p_index])*REALLOC_THRESHOLD) {
+		increase_c_alloc(pg, p_index);
+		performed_realloc = 1;
 	}
+	return performed_realloc;
+}
+#endif
+
+void copy_in_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
+                        const size_t address,
+                        const coord*const RSTRCT coords_in) {
+	assert(pg);
+	assert(coords_in);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] < MAX_C_COUNT);
+	assert(address < pg->c_allocated[p_index]);
+	assert(coords_in[3] < ARC_MAX);
 	memcpy(pg->r_coords + 3*address, coords_in, three_coord_size);
 	pg->n_coords[p_index][address] = coords_in[3];
+	return;
+}
+
+int create_low_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
+                          const coord*const RSTRCT coords_in) {
+	assert(pg);
+	assert(coords_in);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] < MAX_C_COUNT);
+	assert(coords_in[3] < ARC_MAX);
+	recenter_constraints_if_needed(pg, p_index);
+	#if ENABLE_REALLOC == 1
+	realloc_if_needed(pg, p_index);
+	#else
+	assert(pg->c_count[p_index] < pg->c_allocated[p_index]);
+	#endif
+	--(pg->c_start[p_index]);
+	const size_t address = pg->c_start[p_index];
+	copy_in_constraint(pg, p_index, address, coords_in);
 	++(pg->c_count[p_index]);
 	return 0;
 }
 
-int remove_constraint(polygroup1*const RSTRCT pg, const size_t p_index, \
-  const ssize_t c_index) {
+int create_high_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
+                           const coord*const RSTRCT coords_in) {
+	assert(pg);
+	assert(coords_in);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] < MAX_C_COUNT);
+	assert(coords_in[3] < ARC_MAX);
+	recenter_constraints_if_needed(pg, p_index);
+	#if ENABLE_REALLOC == 1
+	realloc_if_needed(pg, p_index);
+	#else
+	assert(pg->c_count[p_index] < pg->c_allocated[p_index]);
+	#endif
+	const size_t address = pg->c_start[p_index] + pg->c_count[p_index];
+	copy_in_constraint(pg, p_index, address, coords_in);
+	++(pg->c_count[p_index]);
+	return 0;
+}
+
+int create_mid_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
+                          const size_t c_index,
+                          const coord*const RSTRCT coords_in) {
+	assert(pg);
+	assert(coords_in);
+	assert(p_index < pg->p_count);
+	assert(c_index > 0);
+	assert(c_index < (pg->c_count[p_index] - 1));
+	assert(pg->c_count[p_index] < MAX_C_COUNT);
+	assert(coords_in[3] < ARC_MAX);
+	recenter_constraints_if_needed(pg, p_index);
+	#if ENABLE_REALLOC == 1
+	realloc_if_needed(pg, p_index);
+	#else
+	assert(pg->c_count[p_index] < pg->c_allocated[p_index]);
+	#endif
+	const size_t address = pg->c_start[p_index] + c_index;
+	const size_t half_count = (pg->c_count[p_index])/2;
+	if (c_index > half_count) {  //This could probably be made branchless.
+		coord*const r_ptr = pg->r_coords[p_index] + 3*address;
+		coord*const n_ptr = pg->n_coords[p_index] + address;
+		const size_t move_count = pg->c_count[p_index] - c_index;
+		memmove(r_ptr + 3, r_ptr, move_count*three_coord_size);
+		memmove(n_ptr + 1, n_ptr, move_count*coord_size);
+	}
+	else {
+		--(pg->c_start[p_index]);
+		coord*const r_ptr = pg->r_coords[p_index] + 3*(pg->c_start[p_index]);
+		coord*const n_ptr = pg->n_coords[p_index] + pg->c_start[p_index];
+		const size_t move_count = c_index - pg->c_start[p_index];
+		memmove(r_ptr - 3, r_ptr, move_count*three_coord_size);
+		memmove(n_ptr - 1, n_ptr, move_count*coord_size);
+	}
+	copy_in_constraint(pg, p_index, address, coords_in);
+	++(pg->c_count[p_index]);
+	return 0;
+}
+
+int remove_low_constraint(polygroup1*const RSTRCT pg, const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
-	assert(c_index < pg->c_count[p_index]);
 	if (pg->c_count[p_index] < 2) {
 		return 1;
 	}
-	switch (c_index) {
-		case 0:
-			++(pg->c_start[p_index]);
-			break;
-		case -1:
-			break;
-		default: {
-			//This should be changed to move either up or down, depending on
-			//which section is shorter.
-			coord*const r_coord = pg->r_coords[p_index] + 3*c_index;
-			memmove(r_coord, r_coord + 1, \
-			  (pg->c_count[p_index] - c_index - 1)*three_coord_size);
-			coord*const n_coord = pg->n_coords[p_index] + c_index;
-			memmove(n_coord, n_coord + 1, \
-			  (pg->c_count[p_index] - c_index - 1)*coord_size);
-			#if KEEP_C_LIFETIMES == 1
-			t_index*const life_coord = pg->life_tsteps[p_index] + c_index;
-			memmove(life_coord, life_coord + 1, \
-			  (pg->c_count[p_index] - c_index - 1)*t_index_size);
-			#endif
-			break;
-		}
+	++(pg->c_start[p_index]);
+	--(pg->c_count[p_index]);
+	return 0;
+}
+
+int remove_high_constraint(polygroup1*const RSTRCT pg, const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	if (pg->c_count[p_index] < 2) {
+		return 1;
 	}
 	--(pg->c_count[p_index]);
 	return 0;
 }
 
-typedef double dparam;
+int remove_mid_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
+                          const size_t c_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	if (pg->c_count[p_index] < 2) {
+		return 1;
+	}
+	assert(c_index < (pg->c_count[p_index] - 1));
+	size_t orig_address;
+	int delta;
+	size_t move_length;
+	const size_t half_count_less_one = (pg->c_count[p_index])/2 - 1;
+	if (c_index > half_count_less_one) {
+		orig_address = pg->c_start[p_index] + c_index + 1;
+		delta = -1;
+		move_length = (pg->c_count[p_index] - c_index) - 1;
+	}
+	else {
+		orig_address = pg->c_start[p_index];
+		delta = 1;
+		move_length = c_index;
+	}
+	coord*const r_coord_orig = pg->r_coords[p_index] + 3*orig_address;
+	memmove(r_coord_orig + 3*delta, r_coord_orig, move_length*three_coord_size);
+	coord*const n_coord_orig = pg->n_coords[p_index] + orig_address;
+	memmove(n_coord_orig + delta, n_coord_orig, move_length*coord_size);
+	#if KEEP_C_LIFETIMES == 1
+	t_index*const life_coord_orig = pg->life_tsteps[p_index] + orig_address;
+	memmove(life_coord_orig + delta, life_coord_orig, move_length*t_index_size);
+	#endif
+	--(pg->c_count[p_index]);
+	return 0;
+}
 
-typedef struct dynamic_params {
-	dparam gamma;
-	dparam zeta;
-	coord cd_length;
-	dparam delta_t;
-} dynamic_params;
+int propose_low_constraint_coordinates(polygroup1*const RSTRCT pg,
+                                       const size_t p_index,
+                                       coord*const RSTRCT coords_new) {
+	assert(pg);
+	assert(coords_new);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] < MAX_C_COUNT);
+	const coord strand_length = \
+	  rand_flat()*(pg->n_coords[p_index][pg->c_start[p_index]]);
+	coords_new[3] = strand_length;
+	if (strand_length < ALPHA) {
+		if (rand_flat() > ((double) strand_length)/ALPHA) {
+			return 1;
+		}
+	}
+	const coord*const r_coords = pg->r_coords[p_index];
+	const size_t index = pg->c_start[p_index];
+	const coord space_stddev_strand = SPACE_STDDEV*sqrt(strand_length);
+	coords_new[0] = space_stddev_strand*rand_gaussian() + r_coords[index];
+	coords_new[1] = space_stddev_strand*rand_gaussian() + r_coords[index + 1];
+	coords_new[1] = space_stddev_strand*rand_gaussian() + r_coords[index + 2];
+	return 0;
+}
 
-const size_t dynamic_params_size = sizeof(dynamic_params);
+int propose_high_constraint_coordinates(polygroup1*const RSTRCT pg,
+                                        const size_t p_index,
+                                        coord*const RSTRCT coords_new) {
+	assert(pg);
+	assert(coords_new);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] < MAX_C_COUNT);
+	const coord strand_length = rand_flat()*(ARC_MAX - \
+	  (pg->n_coords[p_index][pg->c_start[p_index] + pg->c_count[p_index] - 1]));
+	coords_new[3] = ARC_MAX - strand_length;
+	if (strand_length < ALPHA) {
+		if (rand_flat() > ((double) strand_length)/ALPHA) {
+			return 1;
+		}
+	}
+	const coord*const r_coords = pg->r_coords[p_index];
+	const size_t index = pg->c_start[p_index];
+	const coord space_stddev_strand = SPACE_STDDEV*sqrt(strand_length);
+	coords_new[0] = space_stddev_strand*rand_gaussian() + r_coords[index];
+	coords_new[1] = space_stddev_strand*rand_gaussian() + r_coords[index + 1];
+	coords_new[1] = space_stddev_strand*rand_gaussian() + r_coords[index + 2];
+	return 0;
+}
+
+int move_arc_across_low_constraint(polygroup1*const pg, const size_t p_index, \
+                                   const coord delta_arc) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+
+	return 0;
+}
+
+int move_arc_across_high_constraint(polygroup1*const pg, const size_t p_index, \
+                                   const coord delta_arc) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+
+	return 0;
+}
+
+int move_arc_across_mid_constraint(polygroup1*const pg, const size_t p_index, \
+                               const size_t c_index, const coord delta_arc) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(c_index < pg->c_count[p_index]);
+
+	return 0;
+}
 
 
 int main() {
