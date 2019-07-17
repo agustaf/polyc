@@ -9,6 +9,7 @@
 #include "gsl/gsl_randist.h"
 
 #define RSTRCT restrict
+#define RAND_CHECK_BUFFER 1
 #define MAX_C_ALLOC 16384
 #define MAX_C_COUNT 8192
 #define ALLOC_INCREASE_FACTOR 2
@@ -26,6 +27,8 @@
 #define ARC_DIFFUSION_STDDEV 0.01
 //Below is b/Sqrt(3), it is not adjustable.
 #define SPACE_STDDEV MONOMER_LENGTH*0.5773502691896258
+//Below is 3/(2b*b).
+#define THREE_BY_TWO_BSQ 1.5/(MONOMER_LENGTH*MONOMER_LENGTH)
 
 
 const size_t size_t_size = sizeof(size_t);
@@ -68,7 +71,7 @@ void fill_rand_buffer_flat(rand_buffer*const RSTRCT rbuf) {
 	assert(rbuf->buffer);
 	assert(rbuf->buffer_size > 0);
 	const size_t size = rbuf->buffer_size;
-	for (size_t i=0; i<size; ++i) {
+	for (size_t i=(rbuf->position + 1); i<size; ++i) {
 		rbuf->buffer[i] = gsl_rng_uniform(rand_core);
 	}
 	rbuf->position = size - 1;
@@ -80,7 +83,7 @@ void fill_rand_buffer_gaussian(rand_buffer*const RSTRCT rbuf) {
 	assert(rbuf->buffer);
 	assert(rbuf->buffer_size > 0);
 	const size_t size = rbuf->buffer_size;
-	for (size_t i=0; i<size; ++i) {
+	for (size_t i=(rbuf->position + 1); i<size; ++i) {
 		rbuf->buffer[i] = gsl_ran_gaussian(rand_core, 1.0);
 	}
 	rbuf->position = size - 1;
@@ -91,9 +94,11 @@ double rand_flat(void) {
 	assert(global_flat_rbuf);
 	assert(global_flat_rbuf->buffer);
 	assert(global_flat_rbuf->buffer_size > 0);
+	#if RAND_CHECK_BUFFER == 1
 	if (global_flat_rbuf->position == -1) {
 		fill_rand_buffer_flat(global_flat_rbuf);
 	}
+	#endif
 	return global_flat_rbuf->buffer[(global_flat_rbuf->position)--];
 }
 
@@ -101,9 +106,11 @@ double rand_gaussian(void) {
 	assert(global_gaussian_rbuf);
 	assert(global_gaussian_rbuf->buffer);
 	assert(global_gaussian_rbuf->buffer_size > 0);
+	#if RAND_CHECK_BUFFER == 1
 	if (global_gaussian_rbuf->position == -1) {
 		fill_rand_buffer_gaussian(global_gaussian_rbuf);
 	}
+	#endif
 	return global_gaussian_rbuf->buffer[(global_gaussian_rbuf->position)--];
 }
 
@@ -229,6 +236,8 @@ void recenter_constraints(polygroup1*const RSTRCT pg, const size_t p_index) {
 
 void recenter_constraints_if_needed(polygroup1*const RSTRCT pg, \
                                     const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
 	if ((pg->c_start[p_index] == 0) || \
 	  (pg->c_start[p_index] + pg->c_count[p_index] == \
 	  pg->c_allocated[p_index])) {
@@ -511,12 +520,61 @@ int move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	return 0;
 }
 
+coord q_squared(const polygroup1*const RSTRCT pg, const size_t p_index, \
+  const size_t c_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] > 1);
+	assert(c_index < (pg->c_count[p_index] - 1));
+	const size_t i = 3*(c_index + pg->c_start[p_index]);
+	const coord x_delta = \
+	  pg->r_coords[p_index][i + 3] - pg->r_coords[p_index][i];
+	const coord y_delta = \
+	  pg->r_coords[p_index][i + 4] - pg->r_coords[p_index][i + 1];
+	const coord z_delta = \
+	  pg->r_coords[p_index][i + 5] - pg->r_coords[p_index][i + 2];
+	return x_delta*x_delta + y_delta*y_delta + z_delta*z_delta;
+}
+
+coord q_squared_low_strand(const polygroup1*const RSTRCT pg, \
+  const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] > 1);
+	const size_t i = 3*(pg->c_start[p_index]);
+	const coord x_delta = \
+	  pg->r_coords[p_index][i + 3] - pg->r_coords[p_index][i];
+	const coord y_delta = \
+	  pg->r_coords[p_index][i + 4] - pg->r_coords[p_index][i + 1];
+	const coord z_delta = \
+	  pg->r_coords[p_index][i + 5] - pg->r_coords[p_index][i + 2];
+	return x_delta*x_delta + y_delta*y_delta + z_delta*z_delta;
+}
+
+coord q_squared_high_strand(const polygroup1*const RSTRCT pg, \
+  const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] > 2);
+	const size_t i = 3*(pg->c_start[p_index] + pg->c_count[p_index] - 2);
+	const coord x_delta = \
+	  pg->r_coords[p_index][i + 3] - pg->r_coords[p_index][i];
+	const coord y_delta = \
+	  pg->r_coords[p_index][i + 4] - pg->r_coords[p_index][i + 1];
+	const coord z_delta = \
+	  pg->r_coords[p_index][i + 5] - pg->r_coords[p_index][i + 2];
+	return x_delta*x_delta + y_delta*y_delta + z_delta*z_delta;
+}
+
 int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
                                       const size_t p_index) {
 	//This should be the function used if there is only one constraint.
 	assert(pg);
 	assert(p_index < pg->p_count);
 	const size_t index = pg->c_start[p_index];
+	#if KEEP_C_LIFETIMES == 1
+	++(pg->life_tsteps[p_index][index]);
+	#endif
 	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
 	  pg->n_coords[p_index][index];
 	const coord high_arc_limit = \
@@ -525,6 +583,20 @@ int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
 		return 2;
 	}
 	//MC roll.
+	const coord old_high_strand = \
+	  pg->n_coords[p_index][index + 1] - pg->n_coords[p_index][index];
+	const coord new_high_strand = \
+	  pg->n_coords[p_index][index + 1] - new_arc_coord;
+	const coord q_sqr = q_squared_low_strand(pg, p_index);
+	const double accept_factor = \
+	  pow(old_high_strand/new_high_strand, 1.5)* \
+	  exp(THREE_BY_TWO_BSQ*q_sqr*(1.0/old_high_strand - 1.0/new_high_strand));
+	if (accept_factor < 1.0) {
+		if (rand_flat() > accept_factor) {
+			return 1;
+		}
+	}
+	pg->n_coords[p_index][index] = new_arc_coord;
 	return 0;
 }
 
@@ -534,6 +606,9 @@ int mc_move_arc_across_high_constraint(polygroup1*const RSTRCT pg,
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 1);
 	const size_t index = pg->c_start[p_index] + pg->c_count[p_index] - 1;
+	#if KEEP_C_LIFETIMES == 1
+	++(pg->life_tsteps[p_index][index]);
+	#endif
 	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
 	  pg->n_coords[p_index][index];
 	const coord low_arc_limit = pg->n_coords[p_index][index - 1];
@@ -541,6 +616,20 @@ int mc_move_arc_across_high_constraint(polygroup1*const RSTRCT pg,
 		return 2;
 	}
 	//MC roll.
+	const coord old_low_strand = \
+	  pg->n_coords[p_index][index] - pg->n_coords[p_index][index - 1];
+	const coord new_low_strand = \
+	  new_arc_coord - pg->n_coords[p_index][index - 1];
+	const coord q_sqr = q_squared_high_strand(pg, p_index);
+	const double accept_factor = \
+	  pow(old_low_strand/new_low_strand, 1.5)* \
+	  exp(THREE_BY_TWO_BSQ*q_sqr*(1.0/old_low_strand - 1.0/new_low_strand));
+	if (accept_factor < 1.0) {
+		if (rand_flat() > accept_factor) {
+			return 1;
+		}
+	}
+	pg->n_coords[p_index][index] = new_arc_coord;
 	return 0;
 }
 
@@ -553,6 +642,9 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	assert(c_index > 0);
 	assert(c_index < (pg->c_count[p_index] - 1));
 	const size_t index = pg->c_start[p_index] + c_index;
+	#if KEEP_C_LIFETIMES == 1
+	++(pg->life_tsteps[p_index][index]);
+	#endif
 	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
 	  pg->n_coords[p_index][index];
 	const coord low_arc_limit = pg->n_coords[p_index][index - 1];
@@ -561,6 +653,25 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 		return 2;
 	}
 	//MC roll.
+	const coord old_high_strand = \
+	  pg->n_coords[p_index][index + 1] - pg->n_coords[p_index][index];
+	const coord new_high_strand = \
+	  pg->n_coords[p_index][index + 1] - new_arc_coord;
+	const coord old_low_strand = \
+	  pg->n_coords[p_index][index] - pg->n_coords[p_index][index - 1];
+	const coord new_low_strand = \
+	  new_arc_coord - pg->n_coords[p_index][index - 1];
+	const coord q_sqr = q_squared(pg, p_index, c_index);
+	const double accept_factor = \
+	  pow(old_low_strand*old_high_strand/(new_low_strand*new_high_strand), 1.5)* \
+	  exp(THREE_BY_TWO_BSQ*q_sqr*(1.0/old_low_strand - 1.0/new_low_strand + \
+	  1.0/old_high_strand - 1.0/new_high_strand));
+	if (accept_factor < 1.0) {
+		if (rand_flat() > accept_factor) {
+			return 1;
+		}
+	}
+	pg->n_coords[p_index][index] = new_arc_coord;
 	return 0;
 }
 
