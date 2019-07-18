@@ -17,7 +17,7 @@
 #define INITIAL_C_ALLOC 1024
 #define ENABLE_REALLOC 1
 #define LEFT_ALIGN 0
-#define KEEP_C_LIFETIMES 1
+#define KEEP_C_LIFETIMES 0
 
 #define ARC_MAX 100.0
 #define ALPHA 10.0
@@ -139,8 +139,9 @@ typedef struct polygroup1 {
 
 const size_t polygroup1_size = sizeof(polygroup1);
 
-void alloc_polygroup1(polygroup1*const RSTRCT pg, const size_t poly_count_in,
-                      const size_t c_allocated_in) {
+void alloc_polygroup1_members(polygroup1*const RSTRCT pg,
+                              const size_t poly_count_in,
+                              const size_t c_allocated_in) {
 	assert(pg);
 	assert(poly_count_in > 0);
 	assert(c_allocated_in > 0);
@@ -154,7 +155,7 @@ void alloc_polygroup1(polygroup1*const RSTRCT pg, const size_t poly_count_in,
 	#endif
 	pg->r_coords = (coord**) malloc(poly_count_in*coord_ptr_size);
 	for (size_t i=0; i<poly_count_in; ++i) {
-		pg->r_coords[i] = (coord*) malloc(c_allocated_in*coord_size);
+		pg->r_coords[i] = (coord*) malloc(c_allocated_in*three_coord_size);
 	}
 	pg->n_coords = (coord**) malloc(poly_count_in*coord_ptr_size);
 	for (size_t i=0; i<poly_count_in; ++i) {
@@ -177,7 +178,24 @@ void alloc_polygroup1(polygroup1*const RSTRCT pg, const size_t poly_count_in,
 	return;
 }
 
-void free_polygroup1(polygroup1*const RSTRCT pg) {
+polygroup1* alloc_polygroup1(const size_t poly_count_in, \
+  const size_t c_allocated_in) {
+	assert(poly_count_in > 0);
+	assert(c_allocated_in > 0);
+	polygroup1* pg = (polygroup1*) malloc(polygroup1_size);
+	pg->r_coords = NULL;
+	pg->n_coords = NULL;
+	pg->c_count = NULL;
+	pg->c_start = NULL;
+	pg->c_allocated = NULL;
+	#if KEEP_C_LIFETIMES == 1
+	pg->life_tsteps = NULL;
+	#endif
+	alloc_polygroup1_members(pg, poly_count_in, c_allocated_in);
+	return pg;
+}
+
+void free_polygroup1_members(polygroup1*const RSTRCT pg) {
 	assert(pg);
 	assert(pg->p_count > 0);
 	assert(pg->r_coords);
@@ -185,13 +203,13 @@ void free_polygroup1(polygroup1*const RSTRCT pg) {
 	assert(pg->c_count);
 	assert(pg->c_start);
 	assert(pg->c_allocated);
-	const size_t pc = pg->p_count;
-	for (size_t i=0; i<pc; ++i) {
+	const size_t p_count = pg->p_count;
+	for (size_t i=0; i<p_count; ++i) {
 		free(pg->r_coords[i]);
 	}
 	free(pg->r_coords);
 	pg->r_coords = NULL;
-	for (size_t i=0; i<pc; ++i) {
+	for (size_t i=0; i<p_count; ++i) {
 		free(pg->n_coords[i]);
 	}
 	free(pg->n_coords);
@@ -205,7 +223,7 @@ void free_polygroup1(polygroup1*const RSTRCT pg) {
 	pg->p_count = 0;
 	pg->tsteps = -1;
 	#if KEEP_C_LIFETIMES == 1
-	for (size_t i=0; i<pc; ++i) {
+	for (size_t i=0; i<p_count; ++i) {
 		free(pg->life_tsteps[i]);
 	}
 	free(pg->life_tsteps);
@@ -675,8 +693,52 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	return 0;
 }
 
+void print_polygroup1_state(const polygroup1*const RSTRCT pg) {
+	assert(pg);
+	assert(pg->p_count > 0);
+	const size_t p_count = pg->p_count;
+	printf("\nPrinting polygroup1 state, p_count = %ld\n", p_count);
+	for (size_t i=0; i<p_count; ++i) {
+		printf("polymer index: %ld, c_count: %ld, c_start: %ld, c_allocated: %ld\n", \
+		  i, pg->c_count[i], pg->c_start[i], pg->c_allocated[i]);
+		const size_t limit = pg->c_start[i] + pg->c_count[i];
+		for (size_t j=pg->c_start[i]; j<limit; ++j) {
+			const size_t three_j = 3*j;
+			printf("    %lf  %lf  %lf    %lf\n", pg->r_coords[i][three_j], \
+			  pg->r_coords[i][three_j + 1], pg->r_coords[i][three_j + 2], \
+			  pg->n_coords[i][j]);
+		}
+	}
+	return;
+}
+
+polygroup1* create_test_polygroup1(void) {
+	polygroup1* pg = alloc_polygroup1(1, 32);
+	pg->c_count[0] = 2;
+	size_t index = 15;
+	size_t three_index = 3*index;
+	pg->c_start[0] = index;
+	pg->r_coords[0][three_index] = 1.0;
+	pg->r_coords[0][three_index + 1] = 2.0;
+	pg->r_coords[0][three_index + 2] = 3.0;
+	pg->n_coords[0][index] = ARC_MAX*0.5;
+	++index;
+	three_index = 3*index;
+	pg->r_coords[0][three_index] = 7.0;
+	pg->r_coords[0][three_index + 1] = 7.0;
+	pg->r_coords[0][three_index + 2] = 7.0;
+	pg->n_coords[0][index] = ARC_MAX*0.75;
+	return pg;
+}
+
 
 int main() {
+
+	polygroup1* pg = create_test_polygroup1();
+	print_polygroup1_state(pg);
+	free_polygroup1_members(pg);
+	free(pg);
+	pg = NULL;
 
 	return 0;
 }
