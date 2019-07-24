@@ -157,6 +157,7 @@ typedef struct polygroup1 {
 	size_t* c_allocated;
 	size_t p_count;
 	t_index tsteps;
+	size_t id;
 	#if KEEP_C_LIFETIMES == 1
 	t_index** life_tsteps;
 	#endif
@@ -203,8 +204,8 @@ void alloc_polygroup1_members(polygroup1*const RSTRCT pg,
 	return;
 }
 
-polygroup1* alloc_polygroup1(const size_t poly_count_in, \
-  const size_t c_allocated_in) {
+polygroup1* create_polygroup1(const size_t poly_count_in, \
+  const size_t c_allocated_in, const size_t id_in) {
 	assert(poly_count_in > 0);
 	assert(c_allocated_in > 0);
 	polygroup1* pg = (polygroup1*) malloc(polygroup1_size);
@@ -215,6 +216,7 @@ polygroup1* alloc_polygroup1(const size_t poly_count_in, \
 	pg->c_allocated = NULL;
 	#if KEEP_C_LIFETIMES == 1
 	pg->life_tsteps = NULL;
+	pg->id = id_in;
 	#endif
 	alloc_polygroup1_members(pg, poly_count_in, c_allocated_in);
 	return pg;
@@ -255,6 +257,16 @@ void free_polygroup1_members(polygroup1*const RSTRCT pg) {
 	pg->life_tsteps = NULL;
 	#endif
 	return;
+}
+
+size_t total_constraints(const polygroup1*const RSTRCT pg) {
+	assert(pg);
+	const size_t p_count = pg->p_count;
+	size_t c_sum = pg->c_count[0];
+	for (size_t i=1; i<p_count; ++i) {
+		c_sum += pg->c_count[i];
+	}
+	return c_sum;
 }
 
 void recenter_constraints(polygroup1*const RSTRCT pg, const size_t p_index) {
@@ -618,19 +630,36 @@ coord q_squared_high_strand(const polygroup1*const RSTRCT pg, \
 	return x_delta*x_delta + y_delta*y_delta + z_delta*z_delta;
 }
 
-int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
-                                      const size_t p_index) {
-	//This should be the function used if there is only one constraint.
+int mc_move_arc_across_single_constraint(polygroup1*const RSTRCT pg,
+                                         const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] == 1);
 	const size_t index = pg->c_start[p_index];
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
 	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
 	  pg->n_coords[p_index][index];
-	const coord high_arc_limit = (pg->c_count[p_index] == 1) ? \
-	  ARC_MAX - ARC_MIN : pg->n_coords[p_index][index + 1] - ARC_MIN;
+	if (!(new_arc_coord > ARC_MIN) || !(new_arc_coord < ARC_MAX - ARC_MIN)) {
+		return 2;
+	}
+	pg->n_coords[p_index][index] = new_arc_coord;
+	return 0;
+}
+
+int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
+                                      const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] > 1);
+	const size_t index = pg->c_start[p_index];
+	#if KEEP_C_LIFETIMES == 1
+	++(pg->life_tsteps[p_index][index]);
+	#endif
+	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
+	  pg->n_coords[p_index][index];
+	const coord high_arc_limit = pg->n_coords[p_index][index + 1] - ARC_MIN;
 	if (!(new_arc_coord > ARC_MIN) || !(new_arc_coord < high_arc_limit)) {
 		return 2;
 	}
@@ -734,6 +763,10 @@ void mc_move_arc_across_all_random_order(polygroup1*const RSTRCT pg, \
 	assert(p_index < pg->p_count);
 	assert(index_buffer);
 	const size_t c_count = pg->c_count[p_index];
+	if (c_count == 1) {
+		mc_move_arc_across_single_constraint(pg, p_index);
+		return;
+	}
 	const size_t c_count_less_one = c_count - 1;
 	assert(ib_length > c_count);
 	fill_from_zero_size_t(index_buffer, c_count);
@@ -757,6 +790,10 @@ void mc_move_arc_across_all_sequential(polygroup1*const RSTRCT pg, \
   const size_t p_index) {
 	assert(pg);
 	assert(pg->p_count > 0);
+	if (pg->c_count[p_index] == 1) {
+		mc_move_arc_across_single_constraint(pg, p_index);
+		return;
+	}
 	mc_move_arc_across_low_constraint(pg, p_index);
 	const size_t c_count = pg->c_count[p_index];
 	for (size_t i=0; i<c_count; ++i) {
@@ -838,8 +875,56 @@ void poll_polygroup1_history(const polygroup1*const RSTRCT pg, \
                              polygroup1_history*const RSTRCT pgh) {
 	assert(pg);
 	assert(pgh);
+	const size_t p_count = pg->p_count;
+	assert(pgh->p_entries + p_count <= pgh->p_allocated);
+	const size_t c_sum = total_constraints(pg);
+	assert(pgh->c_entries + c_sum < pgh->c_allocated);
+	for (size_t i=0; i<p_count; ++i, ++(pgh->p_entries)) {
+		const size_t pe = pgh->p_entries;
+		pgh->pg_id[pe] = pg->id;
+		pgh->p_index[pe] = i;
+		pgh->t_steps[pe] = pg->tsteps;
+		const size_t c_count = pg->c_count[i];
+		pgh->c_count[pe] = c_count;
+		for (size_t j=0; j<c_count; ++j, ++(pgh->c_entries)) {
+			const size_t ce = pgh->c_entries;
+			const size_t three_ce = 3*ce;
+			const size_t index = pg->c_start[i] + j;
+			const size_t three_index = 3*index;
+			pgh->r_coords[three_ce] = pg->r_coords[i][three_index];
+			pgh->r_coords[three_ce + 1] = pg->r_coords[i][three_index + 1];
+			pgh->r_coords[three_ce + 2] = pg->r_coords[i][three_index + 2];
+			pgh->n_coords[ce] = pg->n_coords[i][index];
+		}
+	}
 	return;
 }
+
+void write_reset_polygroup1_history(polygroup1_history*const RSTRCT pgh, \
+  FILE*const RSTRCT fp) {
+	assert(pgh);
+	const size_t p_entries = pgh->p_entries;
+	size_t c_entry = 0;
+	for (size_t i=0; i<p_entries; ++i) {
+		const size_t c_count = pgh->c_count[i];
+		for (size_t j=0; j<c_count; ++j, ++c_entry) {
+			const size_t three_c_entry = 3*c_entry;
+			fprintf(fp, "%ld %ld %ld %f %f %f %f\n", \
+			  pgh->pg_id[i], \
+			  pgh->p_index[i], \
+			  pgh->t_steps[i], \
+			  pgh->r_coords[three_c_entry], \
+			  pgh->r_coords[three_c_entry + 1], \
+			  pgh->r_coords[three_c_entry + 2], \
+			  pgh->n_coords[c_entry] \
+			);
+		}
+	}
+	pgh->p_entries = 0;
+	pgh->c_entries = 0;
+	return;
+}
+
 
 void print_polygroup1_state(const polygroup1*const RSTRCT pg) {
 	assert(pg);
@@ -862,7 +947,7 @@ void print_polygroup1_state(const polygroup1*const RSTRCT pg) {
 }
 
 polygroup1* create_test_polygroup1(void) {
-	polygroup1* pg = alloc_polygroup1(1, 32);
+	polygroup1* pg = create_polygroup1(1, 32, 1234);
 	pg->c_count[0] = 2;
 	size_t index = 15;
 	size_t three_index = 3*index;
@@ -881,14 +966,20 @@ polygroup1* create_test_polygroup1(void) {
 }
 
 void run_polygroup1_tests(void) {
+	polygroup1_history* pgh = create_polygroup1_history(64, 128);
+
 	polygroup1* pg = create_test_polygroup1();
 	printf("\nInitial polygroup state.\n");
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Creating low constraint.\n");
 	coord new_coords[4] = {4.0, 5.0, 1.0, ARC_MAX*0.25};
 	create_low_constraint(pg, 0, new_coords);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Creating low constraint.\n");
 	new_coords[0] = 2.0;
@@ -897,11 +988,15 @@ void run_polygroup1_tests(void) {
 	new_coords[3] = 0.1*ARC_MAX;
 	create_low_constraint(pg, 0, new_coords);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Creating high constraint.\n");
 	new_coords[3] = 0.9*ARC_MAX;
 	create_high_constraint(pg, 0, new_coords);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Creating high constraint.\n");
 	new_coords[0] = 4.0;
@@ -910,6 +1005,8 @@ void run_polygroup1_tests(void) {
 	new_coords[3] = 0.95*ARC_MAX;
 	create_high_constraint(pg, 0, new_coords);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Creating mid constraint at index 1 (in lower half).\n");
 	new_coords[0] = 0.1;
@@ -918,6 +1015,8 @@ void run_polygroup1_tests(void) {
 	new_coords[3] = 0.2*ARC_MAX;
 	create_mid_constraint(pg, 0, 1, new_coords);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Creating mid constraint at index 4 (in upper half).\n");
 	new_coords[0] = 0.1;
@@ -926,39 +1025,63 @@ void run_polygroup1_tests(void) {
 	new_coords[3] = 0.6*ARC_MAX;
 	create_mid_constraint(pg, 0, 4, new_coords);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Removing high constraint.\n");
 	remove_high_constraint(pg, 0);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Removing low constraint.\n");
 	remove_low_constraint(pg, 0);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Removing mid constraint at index 2 (in lower half).\n");
 	remove_mid_constraint(pg, 0, 2);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Removing mid constraint at index 3 (in upper half).\n");
 	remove_mid_constraint(pg, 0, 3);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Moving arc 3.0 across low constraint.\n");
 	move_arc_across_low_constraint(pg, 0, 3.0);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Moving arc -5.0 across high constraint.\n");
 	move_arc_across_high_constraint(pg, 0, -5.0);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 	printf("Moving arc 7.0 across constraint 1.\n");
 	move_arc_across_mid_constraint(pg, 0, 1, 7.0);
 	print_polygroup1_state(pg);
+	poll_polygroup1_history(pg, pgh);
+	++(pg->tsteps);
 
 
 	free_polygroup1_members(pg);
 	free(pg);
 	pg = NULL;
+
+	FILE* fp = fopen("polygroup1_test.txt", "a");
+	write_reset_polygroup1_history(pgh, fp);
+	fclose(fp);
+	fp = NULL;
+	free_polygroup1_history_members(pgh);
+	free(pgh);
+	pgh = NULL;
 }
 
 
