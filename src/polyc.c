@@ -149,6 +149,36 @@ typedef ssize_t t_index;
 const size_t t_index_size = sizeof(t_index);
 const size_t t_index_ptr_size = sizeof(t_index*);
 
+void insertion_sort_coords(coord*const RSTRCT array, const size_t length) {
+	//This does insertion sort.
+	assert(array);
+	assert(length > 0);
+	coord*const array_plus_one = array + 1;
+	for (size_t i=1; i<length; ++i) {
+		for (size_t j=0; j<i; ++j) {
+			if (array[i] < array[j]) {
+				coord temp = array[i];
+				memmove(array_plus_one + j, array + j, (i - j)*coord_size);
+				array[j] = temp;
+				break;
+			}
+		}
+	}
+	return;
+}
+
+void fill_flat_random_coords_and_sort(coord*const RSTRCT array, \
+  const coord rand_max, const size_t length) {
+	assert(array);
+	assert(rand_max > 0.0);
+	assert(length > 0);
+	for (size_t i=0; i<length; ++i) {
+		array[i] = rand_max*rand_flat();
+	}
+	insertion_sort_coords(array, length);
+	return;
+}
+
 typedef struct polygroup1 {
 	coord** r_coords;
 	coord** n_coords;
@@ -259,6 +289,26 @@ void free_polygroup1_members(polygroup1*const RSTRCT pg) {
 	return;
 }
 
+void initialize_polygroup1_alpha_mean(polygroup1*const pg) {
+	assert(pg);
+	assert(pg->p_count > 0);
+	size_t initial_c = (size_t) ((double) ARC_MAX)/((double) ALPHA);
+	coord* initial_n_coords = (coord*) malloc(initial_c*coord_size);
+	coord* initial_r_coords = (coord*) malloc(initial_c*three_coord_size);
+	const size_t p_count = pg->p_count;
+	//needs to set the c_start values
+	for (size_t i=0; i<p_count; ++i) {
+		assert(pg->c_allocated[i] >= initial_c);
+		fill_flat_random_coords_and_sort(initial_n_coords, ARC_MAX, initial_c);
+	}
+
+	free(initial_n_coords);
+	initial_n_coords = NULL;
+	free(initial_r_coords);
+	initial_r_coords = NULL;
+	return;
+}
+
 size_t total_constraints(const polygroup1*const RSTRCT pg) {
 	assert(pg);
 	const size_t p_count = pg->p_count;
@@ -332,6 +382,23 @@ static inline int realloc_if_needed(polygroup1*const RSTRCT pg,
 	return performed_realloc;
 }
 #endif
+
+void copy_in_constraint_range(polygroup1*const RSTRCT pg, const size_t p_index,
+                              const size_t address, \
+                              const coord*const RSTRCT r_coords_in, \
+                              const coord*const RSTRCT n_coords_in, \
+                              const size_t length) {
+	assert(pg);
+	assert(r_coords_in);
+	assert(n_coords_in);
+	assert(length > 0);
+	assert(address + length <= pg->c_allocated[p_index]);
+	memcpy(pg->r_coords[p_index] + 3*address, r_coords_in, \
+	  length*three_coord_size);
+	memcpy(pg->n_coords[p_index] + address, n_coords_in, \
+	  length*coord_size);
+	return;
+}
 
 void copy_in_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
                         const size_t address,
@@ -542,19 +609,28 @@ int mc_move_create_high_constraint(polygroup1*const RSTRCT pg,
 	return 0;
 }
 
-int move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
+int move_arc_across_single_constraint(polygroup1*const RSTRCT pg,
                                    const size_t p_index,
                                    const coord delta_arc) {
-	//This should be the function used if there is only one constraint.
 	assert(pg);
 	assert(p_index < pg->p_count);
 	const size_t index = pg->c_start[p_index];
 	const coord new_arc_loc = pg->n_coords[p_index][index] + delta_arc;
 	assert(new_arc_loc > ARC_MIN);
 	assert(new_arc_loc < ARC_MAX - ARC_MIN);
-	if (pg->c_count[p_index] > 1) {
-		assert(new_arc_loc + ARC_MIN < pg->n_coords[p_index][index + 1]);
-	}
+	pg->n_coords[p_index][index] = new_arc_loc;
+	return 0;
+}
+
+int move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
+                                   const size_t p_index,
+                                   const coord delta_arc) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	const size_t index = pg->c_start[p_index];
+	const coord new_arc_loc = pg->n_coords[p_index][index] + delta_arc;
+	assert(new_arc_loc > ARC_MIN);
+	assert(new_arc_loc + ARC_MIN < pg->n_coords[p_index][index + 1]);
 	pg->n_coords[p_index][index] = new_arc_loc;
 	return 0;
 }
@@ -635,16 +711,17 @@ int mc_move_arc_across_single_constraint(polygroup1*const RSTRCT pg,
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] == 1);
+	++(pg->tsteps);
 	const size_t index = pg->c_start[p_index];
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
-	  pg->n_coords[p_index][index];
+	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	const coord new_arc_coord = delta_arc + pg->n_coords[p_index][index];
 	if (!(new_arc_coord > ARC_MIN) || !(new_arc_coord < ARC_MAX - ARC_MIN)) {
 		return 2;
 	}
-	pg->n_coords[p_index][index] = new_arc_coord;
+	move_arc_across_single_constraint(pg, p_index, delta_arc);
 	return 0;
 }
 
@@ -653,12 +730,13 @@ int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 1);
+	++(pg->tsteps);
 	const size_t index = pg->c_start[p_index];
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
-	  pg->n_coords[p_index][index];
+	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	const coord new_arc_coord =  delta_arc + pg->n_coords[p_index][index];
 	const coord high_arc_limit = pg->n_coords[p_index][index + 1] - ARC_MIN;
 	if (!(new_arc_coord > ARC_MIN) || !(new_arc_coord < high_arc_limit)) {
 		return 2;
@@ -677,7 +755,7 @@ int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
 			return 1;
 		}
 	}
-	pg->n_coords[p_index][index] = new_arc_coord;
+	move_arc_across_low_constraint(pg, p_index, delta_arc);
 	return 0;
 }
 
@@ -686,12 +764,13 @@ int mc_move_arc_across_high_constraint(polygroup1*const RSTRCT pg,
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 1);
+	++(pg->tsteps);
 	const size_t index = pg->c_start[p_index] + pg->c_count[p_index] - 1;
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
-	  pg->n_coords[p_index][index];
+	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	const coord new_arc_coord =  delta_arc + pg->n_coords[p_index][index];
 	const coord low_arc_limit = pg->n_coords[p_index][index - 1] + ARC_MIN;
 	if (!(new_arc_coord > low_arc_limit) || \
 	    !(new_arc_coord < ARC_MAX - ARC_MIN)) {
@@ -711,6 +790,7 @@ int mc_move_arc_across_high_constraint(polygroup1*const RSTRCT pg,
 			return 1;
 		}
 	}
+	move_arc_across_high_constraint(pg, p_index, delta_arc);
 	pg->n_coords[p_index][index] = new_arc_coord;
 	return 0;
 }
@@ -723,12 +803,13 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	assert(pg->c_count[p_index] > 2);
 	assert(c_index > 0);
 	assert(c_index < (pg->c_count[p_index] - 1));
+	++(pg->tsteps);
 	const size_t index = pg->c_start[p_index] + c_index;
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord new_arc_coord = ARC_DIFFUSION_STDDEV*rand_gaussian() + \
-	  pg->n_coords[p_index][index];
+	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	const coord new_arc_coord = delta_arc + pg->n_coords[p_index][index];
 	const coord low_arc_limit = pg->n_coords[p_index][index - 1] + ARC_MIN;
 	const coord high_arc_limit = pg->n_coords[p_index][index + 1] - ARC_MIN;
 	if (!(new_arc_coord > low_arc_limit) || !(new_arc_coord < high_arc_limit)) {
@@ -753,15 +834,16 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 			return 1;
 		}
 	}
-	pg->n_coords[p_index][index] = new_arc_coord;
+	move_arc_across_mid_constraint(pg, p_index, c_index, delta_arc);
 	return 0;
 }
 
 void mc_move_arc_across_all_random_order(polygroup1*const RSTRCT pg, \
   const size_t p_index, size_t* index_buffer, const size_t ib_length) {
 	assert(pg);
-	assert(p_index < pg->p_count);
 	assert(index_buffer);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] > 0);
 	const size_t c_count = pg->c_count[p_index];
 	if (c_count == 1) {
 		mc_move_arc_across_single_constraint(pg, p_index);
@@ -789,7 +871,8 @@ void mc_move_arc_across_all_random_order(polygroup1*const RSTRCT pg, \
 void mc_move_arc_across_all_sequential(polygroup1*const RSTRCT pg, \
   const size_t p_index) {
 	assert(pg);
-	assert(pg->p_count > 0);
+	assert(p_index < pg->p_count);
+	assert(pg->c_count[p_index] > 0);
 	if (pg->c_count[p_index] == 1) {
 		mc_move_arc_across_single_constraint(pg, p_index);
 		return;
