@@ -52,7 +52,8 @@ const size_t rand_buffer_size = sizeof(rand_buffer);
 rand_buffer* global_flat_rbuf;
 rand_buffer* global_gaussian_rbuf;
 
-void allocate_rand_buffer(rand_buffer*const RSTRCT rbuf, const size_t size) {
+void allocate_rand_buffer_members(rand_buffer*const RSTRCT rbuf, \
+  const size_t size) {
 	assert(rbuf);
 	assert(!(rbuf->buffer));
 	rbuf->buffer = (double*) malloc(size*double_size);
@@ -61,7 +62,17 @@ void allocate_rand_buffer(rand_buffer*const RSTRCT rbuf, const size_t size) {
 	return;
 }
 
-void free_rand_buffer(rand_buffer*const RSTRCT rbuf) {
+rand_buffer* create_rand_buffer(const size_t size) {
+	assert(size > 0);
+	rand_buffer* rbuf = (rand_buffer*) malloc(rand_buffer_size);
+	rbuf->buffer = NULL;
+	rbuf->buffer_size = 0;
+	rbuf->position = -1;
+	allocate_rand_buffer_members(rbuf, size);
+	return rbuf;
+}
+
+void free_rand_buffer_members(rand_buffer*const RSTRCT rbuf) {
 	assert(rbuf);
 	assert(rbuf->buffer);
 	free(rbuf->buffer);
@@ -167,8 +178,9 @@ void insertion_sort_coords(coord*const RSTRCT array, const size_t length) {
 	return;
 }
 
-void fill_flat_random_coords_and_sort(coord*const RSTRCT array, \
-  const coord rand_max, const size_t length) {
+void fill_flat_random_coords_and_sort(coord*const RSTRCT array,
+                                      const coord rand_max,
+                                      const size_t length) {
 	assert(array);
 	assert(rand_max > 0.0);
 	assert(length > 0);
@@ -176,6 +188,29 @@ void fill_flat_random_coords_and_sort(coord*const RSTRCT array, \
 		array[i] = rand_max*rand_flat();
 	}
 	insertion_sort_coords(array, length);
+	return;
+}
+
+void fill_gaussian_r_coords_given_n_coords(const coord*const RSTRCT n_coords, \
+                                           coord*const RSTRCT r_coords, \
+                                           const size_t length, \
+										   const coord*const RSTRCT r0) {
+	assert(n_coords);
+	assert(r_coords);
+	assert(r0);
+	assert(length > 0);
+	r_coords[0] = r0[0];
+	r_coords[1] = r0[1];
+	r_coords[2] = r0[2];
+	for (size_t i=1; i<length; ++i) {
+		const coord delta_arc = n_coords[i] - n_coords[i-1];
+		assert(delta_arc > ARC_MIN);
+		const coord std_dev = SPACE_STDDEV*sqrt(delta_arc);
+		const size_t three_i = 3*i;
+		r_coords[three_i] = std_dev*rand_gaussian() + r_coords[three_i - 3];
+		r_coords[three_i + 1] = std_dev*rand_gaussian() + r_coords[three_i - 2];
+		r_coords[three_i + 2] = std_dev*rand_gaussian() + r_coords[three_i - 1];
+	}
 	return;
 }
 
@@ -293,19 +328,18 @@ void initialize_polygroup1_alpha_mean(polygroup1*const pg) {
 	assert(pg);
 	assert(pg->p_count > 0);
 	size_t initial_c = (size_t) ((double) ARC_MAX)/((double) ALPHA);
-	coord* initial_n_coords = (coord*) malloc(initial_c*coord_size);
-	coord* initial_r_coords = (coord*) malloc(initial_c*three_coord_size);
 	const size_t p_count = pg->p_count;
-	//needs to set the c_start values
+	const coord r0[3] = {0.0, 0.0, 0.0};
 	for (size_t i=0; i<p_count; ++i) {
 		assert(pg->c_allocated[i] >= initial_c);
-		fill_flat_random_coords_and_sort(initial_n_coords, ARC_MAX, initial_c);
+		const size_t c_start = (pg->c_allocated[i] - initial_c)/2;
+		pg->c_start[i] = c_start;
+		fill_flat_random_coords_and_sort(pg->n_coords[i] + c_start, ARC_MAX, \
+		  initial_c);
+		fill_gaussian_r_coords_given_n_coords(pg->n_coords[i] + c_start, \
+		  pg->r_coords[i] + 3*c_start, initial_c, r0);
+		pg->c_count[i] = initial_c;
 	}
-
-	free(initial_n_coords);
-	initial_n_coords = NULL;
-	free(initial_r_coords);
-	initial_r_coords = NULL;
 	return;
 }
 
@@ -1165,6 +1199,30 @@ void run_polygroup1_tests(void) {
 	free_polygroup1_history_members(pgh);
 	free(pgh);
 	pgh = NULL;
+
+	const gsl_rng_type*const rng_type = gsl_rng_default;
+	rand_core = gsl_rng_alloc(rng_type);
+	global_gaussian_rbuf = create_rand_buffer(128);
+	fill_rand_buffer_gaussian(global_gaussian_rbuf);
+	global_flat_rbuf = create_rand_buffer(128);
+	fill_rand_buffer_flat(global_flat_rbuf);
+
+	printf("Alpha mean initialized polygroup1:\n");
+	pg = create_polygroup1(1, 32, 5678);
+	initialize_polygroup1_alpha_mean(pg);
+	print_polygroup1_state(pg);
+	free_polygroup1_members(pg);
+	free(pg);
+	pg = NULL;
+
+	free_rand_buffer_members(global_gaussian_rbuf);
+	free(global_gaussian_rbuf);
+	global_gaussian_rbuf = NULL;
+	free_rand_buffer_members(global_flat_rbuf);
+	free(global_flat_rbuf);
+	global_flat_rbuf = NULL;
+	gsl_rng_free(rand_core);
+	rand_core = NULL;
 }
 
 
