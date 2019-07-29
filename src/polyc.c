@@ -35,11 +35,18 @@
 //Below is 3/(2b*b), it is not adjustable.
 #define THREE_BY_TWO_BSQ 1.5/(MONOMER_LENGTH*MONOMER_LENGTH)
 
+#define SAMPLES 10
+#define CYCLES_PER_SAMPLE 10
+#define TSTEPS_PER_CYCLE 10
+#define PRESIM_CYCLES 10
+#define POLY_COUNT 4
+
+
 
 const size_t size_t_size = sizeof(size_t);
 const size_t double_size = sizeof(double);
 
-gsl_rng* rand_core;
+gsl_rng* rand_core = NULL;
 
 typedef struct rand_buffer {
 	size_t buffer_size;
@@ -49,11 +56,11 @@ typedef struct rand_buffer {
 
 const size_t rand_buffer_size = sizeof(rand_buffer);
 
-rand_buffer* global_flat_rbuf;
-rand_buffer* global_gaussian_rbuf;
+rand_buffer* global_flat_rbuf = NULL;
+rand_buffer* global_gaussian_rbuf = NULL;
 
-void allocate_rand_buffer_members(rand_buffer*const RSTRCT rbuf, \
-  const size_t size) {
+void allocate_rand_buffer_members(rand_buffer*const RSTRCT rbuf,
+                                  const size_t size) {
 	assert(rbuf);
 	assert(!(rbuf->buffer));
 	rbuf->buffer = (double*) malloc(size*double_size);
@@ -106,6 +113,37 @@ void fill_rand_buffer_gaussian(rand_buffer*const RSTRCT rbuf) {
 	return;
 }
 
+void initialize_global_rand_buffers_default(const size_t size) {
+	assert(!(global_flat_rbuf));
+	assert(!(global_gaussian_rbuf));
+	assert(!(rand_core));
+	assert(size > 0);
+	const gsl_rng_type*const rng_type = gsl_rng_default;
+	rand_core = gsl_rng_alloc(rng_type);
+	global_flat_rbuf = create_rand_buffer(size);
+	fill_rand_buffer_flat(global_flat_rbuf);
+	global_gaussian_rbuf = create_rand_buffer(size);
+	fill_rand_buffer_gaussian(global_gaussian_rbuf);
+	return;
+}
+
+void free_global_rand_buffers(void) {
+	assert(global_flat_rbuf);
+	assert(global_flat_rbuf->buffer);
+	assert(global_gaussian_rbuf);
+	assert(global_gaussian_rbuf->buffer);
+	assert(rand_core);
+	free_rand_buffer_members(global_flat_rbuf);
+	free(global_flat_rbuf);
+	global_flat_rbuf = NULL;
+	free_rand_buffer_members(global_gaussian_rbuf);
+	free(global_gaussian_rbuf);
+	global_gaussian_rbuf = NULL;
+	gsl_rng_free(rand_core);
+	rand_core = NULL;
+	return;
+}
+
 double rand_flat(void) {
 	assert(global_flat_rbuf);
 	assert(global_flat_rbuf->buffer);
@@ -130,6 +168,11 @@ double rand_gaussian(void) {
 	return global_gaussian_rbuf->buffer[(global_gaussian_rbuf->position)--];
 }
 
+int rand_system_prepared(void) {
+	return (int) (rand_core && global_flat_rbuf && global_flat_rbuf->buffer && \
+	  global_gaussian_rbuf && global_gaussian_rbuf->buffer);
+}
+
 void fill_from_zero_size_t(size_t*const RSTRCT array, const size_t length) {
 	assert(array);
 	assert(length > 0);
@@ -139,8 +182,8 @@ void fill_from_zero_size_t(size_t*const RSTRCT array, const size_t length) {
 	return;
 }
 
-size_t random_select_and_pop_size_t(size_t*const RSTRCT array, \
-  const size_t length) {
+size_t random_select_and_pop_size_t(size_t*const RSTRCT array,
+                                    const size_t length) {
 	assert(array);
 	assert(length > 0);
 	const size_t index = (size_t) (length*rand_flat());
@@ -154,7 +197,6 @@ typedef double coord;
 const size_t coord_size = sizeof(coord);
 const size_t three_coord_size = 3*coord_size;
 const size_t coord_ptr_size = sizeof(coord*);
-#define coord_min DBL_TRUE_MIN
 
 typedef ssize_t t_index;
 const size_t t_index_size = sizeof(t_index);
@@ -191,9 +233,9 @@ void fill_flat_random_coords_and_sort(coord*const RSTRCT array,
 	return;
 }
 
-void fill_gaussian_r_coords_given_n_coords(const coord*const RSTRCT n_coords, \
-                                           coord*const RSTRCT r_coords, \
-                                           const size_t length, \
+void fill_gaussian_r_coords_given_n_coords(const coord*const RSTRCT n_coords,
+                                           coord*const RSTRCT r_coords,
+                                           const size_t length,
 										   const coord*const RSTRCT r0) {
 	assert(n_coords);
 	assert(r_coords);
@@ -269,8 +311,9 @@ void alloc_polygroup1_members(polygroup1*const RSTRCT pg,
 	return;
 }
 
-polygroup1* create_polygroup1(const size_t poly_count_in, \
-  const size_t c_allocated_in, const size_t id_in) {
+polygroup1* create_polygroup1(const size_t poly_count_in,
+                              const size_t c_allocated_in,
+                              const size_t id_in) {
 	assert(poly_count_in > 0);
 	assert(c_allocated_in > 0);
 	polygroup1* pg = (polygroup1*) malloc(polygroup1_size);
@@ -324,7 +367,7 @@ void free_polygroup1_members(polygroup1*const RSTRCT pg) {
 	return;
 }
 
-void initialize_polygroup1_alpha_mean(polygroup1*const pg) {
+void initialize_polygroup1_alpha_mean(polygroup1*const RSTRCT pg) {
 	assert(pg);
 	assert(pg->p_count > 0);
 	size_t initial_c = (size_t) ((double) ARC_MAX)/((double) ALPHA);
@@ -539,9 +582,7 @@ int create_mid_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
 int remove_low_constraint(polygroup1*const RSTRCT pg, const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
-	if (pg->c_count[p_index] < 2) {
-		return 1;
-	}
+	assert(pg->c_count[p_index] > 1);
 	++(pg->c_start[p_index]);
 	--(pg->c_count[p_index]);
 	return 0;
@@ -550,9 +591,7 @@ int remove_low_constraint(polygroup1*const RSTRCT pg, const size_t p_index) {
 int remove_high_constraint(polygroup1*const RSTRCT pg, const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
-	if (pg->c_count[p_index] < 2) {
-		return 1;
-	}
+	assert(pg->c_count[p_index] > 1);
 	--(pg->c_count[p_index]);
 	return 0;
 }
@@ -561,9 +600,7 @@ int remove_mid_constraint(polygroup1*const RSTRCT pg, const size_t p_index,
                           const size_t c_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
-	if (pg->c_count[p_index] < 2) {
-		return 1;
-	}
+	assert(pg->c_count[p_index] > 1);
 	assert(c_index > 0);
 	assert(c_index < (pg->c_count[p_index] - 1));
 	const size_t high_length = pg->c_count[p_index] - c_index - 1;
@@ -643,9 +680,46 @@ int mc_move_create_high_constraint(polygroup1*const RSTRCT pg,
 	return 0;
 }
 
+int mc_move_remove_low_constraint(polygroup1*const RSTRCT pg,
+                                  const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	if (pg->c_count[p_index] < 2) {
+		return 2;
+	}
+	const size_t index = pg->c_start[p_index] + 1;
+	const coord strand_length = pg->n_coords[p_index][index];
+	if (strand_length > ALPHA) {
+		if (rand_flat() > ALPHA/((double) strand_length)) {
+			return 1;
+		}
+	}
+	remove_low_constraint(pg, p_index);
+	return 0;
+}
+
+int mc_move_remove_high_constraint(polygroup1*const RSTRCT pg,
+                                   const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	if (pg->c_count[p_index] < 2) {
+		return 2;
+	}
+	const size_t index = \
+	  ARC_MAX - (pg->c_start[p_index] + pg->c_count[p_index] - 2);
+	const coord strand_length = pg->n_coords[p_index][index];
+	if (strand_length > ALPHA) {
+		if (rand_flat() > ALPHA/((double) strand_length)) {
+			return 1;
+		}
+	}
+	remove_high_constraint(pg, p_index);
+	return 0;
+}
+
 int move_arc_across_single_constraint(polygroup1*const RSTRCT pg,
-                                   const size_t p_index,
-                                   const coord delta_arc) {
+                                      const size_t p_index,
+                                      const coord delta_arc) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	const size_t index = pg->c_start[p_index];
@@ -700,8 +774,8 @@ int move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	return 0;
 }
 
-coord q_squared(const polygroup1*const RSTRCT pg, const size_t p_index, \
-  const size_t c_index) {
+coord q_squared(const polygroup1*const RSTRCT pg, const size_t p_index,
+                const size_t c_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 1);
@@ -714,8 +788,8 @@ coord q_squared(const polygroup1*const RSTRCT pg, const size_t p_index, \
 	return x_delta*x_delta + y_delta*y_delta + z_delta*z_delta;
 }
 
-coord q_squared_low_strand(const polygroup1*const RSTRCT pg, \
-  const size_t p_index) {
+coord q_squared_low_strand(const polygroup1*const RSTRCT pg,
+                           const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 1);
@@ -727,8 +801,8 @@ coord q_squared_low_strand(const polygroup1*const RSTRCT pg, \
 	return x_delta*x_delta + y_delta*y_delta + z_delta*z_delta;
 }
 
-coord q_squared_high_strand(const polygroup1*const RSTRCT pg, \
-  const size_t p_index) {
+coord q_squared_high_strand(const polygroup1*const RSTRCT pg,
+                            const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 2);
@@ -872,8 +946,10 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	return 0;
 }
 
-void mc_move_arc_across_all_random_order(polygroup1*const RSTRCT pg, \
-  const size_t p_index, size_t* index_buffer, const size_t ib_length) {
+void mc_move_arc_across_all_random_order(polygroup1*const RSTRCT pg,
+                                         const size_t p_index,
+                                         size_t* index_buffer,
+                                         const size_t ib_length) {
 	assert(pg);
 	assert(index_buffer);
 	assert(p_index < pg->p_count);
@@ -902,8 +978,8 @@ void mc_move_arc_across_all_random_order(polygroup1*const RSTRCT pg, \
 	return;
 }
 
-void mc_move_arc_across_all_sequential(polygroup1*const RSTRCT pg, \
-  const size_t p_index) {
+void mc_move_arc_across_all_sequential(polygroup1*const RSTRCT pg,
+                                       const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(pg->c_count[p_index] > 0);
@@ -917,6 +993,14 @@ void mc_move_arc_across_all_sequential(polygroup1*const RSTRCT pg, \
 		mc_move_arc_across_mid_constraint(pg, p_index, i);
 	}
 	mc_move_arc_across_high_constraint(pg, p_index);
+	return;
+}
+void mc_move_arc_across_all_sequential_group(polygroup1*const RSTRCT pg) {
+	assert(pg);
+	const size_t p_count = pg->p_count;
+	for (size_t i=0; i<p_count; ++i) {
+		mc_move_arc_across_all_sequential(pg, i);
+	}
 	return;
 }
 
@@ -1018,7 +1102,7 @@ void poll_polygroup1_history(const polygroup1*const RSTRCT pg, \
 }
 
 void write_reset_polygroup1_history(polygroup1_history*const RSTRCT pgh, \
-  FILE*const RSTRCT fp) {
+                                    FILE*const RSTRCT fp) {
 	assert(pgh);
 	const size_t p_entries = pgh->p_entries;
 	size_t c_entry = 0;
@@ -1223,6 +1307,27 @@ void run_polygroup1_tests(void) {
 	global_flat_rbuf = NULL;
 	gsl_rng_free(rand_core);
 	rand_core = NULL;
+}
+
+void mc_sequential_simulation(void) {
+	assert(rand_system_prepared());
+	polygroup1*const pg = create_polygroup1(POLY_COUNT, INITIAL_C_ALLOC, 1234);
+	initialize_polygroup1_alpha_mean(pg);
+	for (size_t j=0; j<PRESIM_CYCLES; ++j) {
+		for (size_t k=0; k<TSTEPS_PER_CYCLE; ++k) {
+			mc_move_arc_across_all_sequential_group(pg);
+		}
+	}
+	for (size_t i=0; i<SAMPLES; ++i) {
+		for (size_t j=0; j<CYCLES_PER_SAMPLE; ++j) {
+			for (size_t k=0; k<TSTEPS_PER_CYCLE; ++k) {
+				mc_move_arc_across_all_sequential_group(pg);
+			}
+		}
+	}
+	free_polygroup1_members(pg);
+	free(pg);
+	return;
 }
 
 
