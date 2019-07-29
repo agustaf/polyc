@@ -40,6 +40,8 @@
 #define TSTEPS_PER_CYCLE 10
 #define PRESIM_CYCLES 10
 #define POLY_COUNT 4
+#define POLYGROUP1_HISTORY_MAX_POLY 64
+#define POLYGROUP1_HISTORY_MAX_TSTEPS 1024
 
 
 
@@ -461,9 +463,9 @@ static inline int realloc_if_needed(polygroup1*const RSTRCT pg,
 #endif
 
 void copy_in_constraint_range(polygroup1*const RSTRCT pg, const size_t p_index,
-                              const size_t address, \
-                              const coord*const RSTRCT r_coords_in, \
-                              const coord*const RSTRCT n_coords_in, \
+                              const size_t address,
+                              const coord*const RSTRCT r_coords_in,
+                              const coord*const RSTRCT n_coords_in,
                               const size_t length) {
 	assert(pg);
 	assert(r_coords_in);
@@ -715,6 +717,85 @@ int mc_move_remove_high_constraint(polygroup1*const RSTRCT pg,
 	}
 	remove_high_constraint(pg, p_index);
 	return 0;
+}
+
+int* mc_end_create_or_remove_lh(polygroup1*const RSTRCT pg,
+                                const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	static int results[2];
+	if (rand_flat() > 0.5) {
+		results[0] = mc_move_create_low_constraint(pg, p_index);
+	}
+	else {
+		results[0] = mc_move_remove_low_constraint(pg, p_index);
+	}
+	if (rand_flat() > 0.5) {
+		results[1] = mc_move_create_high_constraint(pg, p_index);
+	}
+	else {
+		results[1] = mc_move_remove_high_constraint(pg, p_index);
+	}
+	return results;
+}
+
+int* mc_end_create_or_remove_hl(polygroup1*const RSTRCT pg,
+                                const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	static int results[2];
+	if (rand_flat() > 0.5) {
+		results[1] = mc_move_create_high_constraint(pg, p_index);
+	}
+	else {
+		results[1] = mc_move_remove_high_constraint(pg, p_index);
+	}
+	if (rand_flat() > 0.5) {
+		results[0] = mc_move_create_low_constraint(pg, p_index);
+	}
+	else {
+		results[0] = mc_move_remove_low_constraint(pg, p_index);
+	}
+	return results;
+}
+
+int* mc_end_create_or_remove_random(polygroup1*const RSTRCT pg,
+                                    const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	if (rand_flat() > 0.5) {
+		return mc_end_create_or_remove_lh(pg, p_index);
+	}
+	else {
+		return mc_end_create_or_remove_hl(pg, p_index);
+	}
+}
+
+void mc_end_create_or_remove_lh_group(polygroup1*const RSTRCT pg) {
+	assert(pg);
+	const size_t p_count = pg->p_count;
+	for (size_t i=0; i<p_count; ++i) {
+		mc_end_create_or_remove_lh(pg, i);
+	}
+	return;
+}
+
+void mc_end_create_or_remove_hl_group(polygroup1*const RSTRCT pg) {
+	assert(pg);
+	const size_t p_count = pg->p_count;
+	for (size_t i=0; i<p_count; ++i) {
+		mc_end_create_or_remove_hl(pg, i);
+	}
+	return;
+}
+
+void mc_end_create_or_remove_random_group(polygroup1*const RSTRCT pg) {
+	assert(pg);
+	const size_t p_count = pg->p_count;
+	for (size_t i=0; i<p_count; ++i) {
+		mc_end_create_or_remove_random(pg, i);
+	}
+	return;
 }
 
 int move_arc_across_single_constraint(polygroup1*const RSTRCT pg,
@@ -1072,7 +1153,7 @@ void free_polygroup1_history_members(polygroup1_history*const RSTRCT pgh) {
 	return;
 }
 
-void poll_polygroup1_history(const polygroup1*const RSTRCT pg, \
+void poll_polygroup1_history(const polygroup1*const RSTRCT pg,
                              polygroup1_history*const RSTRCT pgh) {
 	assert(pg);
 	assert(pgh);
@@ -1101,9 +1182,10 @@ void poll_polygroup1_history(const polygroup1*const RSTRCT pg, \
 	return;
 }
 
-void write_reset_polygroup1_history(polygroup1_history*const RSTRCT pgh, \
+void write_reset_polygroup1_history(polygroup1_history*const RSTRCT pgh,
                                     FILE*const RSTRCT fp) {
 	assert(pgh);
+	assert(fp);
 	const size_t p_entries = pgh->p_entries;
 	size_t c_entry = 0;
 	for (size_t i=0; i<p_entries; ++i) {
@@ -1126,6 +1208,20 @@ void write_reset_polygroup1_history(polygroup1_history*const RSTRCT pgh, \
 	return;
 }
 
+void poll_or_write_reset_polygroup1_history(const polygroup1*const RSTRCT pg,
+                                            polygroup1_history*const RSTRCT pgh,
+                                            FILE*const RSTRCT fp) {
+	assert(pg);
+	assert(pgh);
+	assert(fp);
+	if (pgh->p_entries + pg->p_count > pgh->p_allocated) {
+		write_reset_polygroup1_history(pgh, fp);
+	}
+	else {
+		poll_polygroup1_history(pg, pgh);
+	}
+	return;
+}
 
 void print_polygroup1_state(const polygroup1*const RSTRCT pg) {
 	assert(pg);
@@ -1311,22 +1407,32 @@ void run_polygroup1_tests(void) {
 
 void mc_sequential_simulation(void) {
 	assert(rand_system_prepared());
+	FILE*const fp = fopen("output_file.txt", "w");
+	polygroup1_history*const pgh = \
+	  create_polygroup1_history(POLYGROUP1_HISTORY_MAX_POLY, \
+	  POLYGROUP1_HISTORY_MAX_TSTEPS);
 	polygroup1*const pg = create_polygroup1(POLY_COUNT, INITIAL_C_ALLOC, 1234);
 	initialize_polygroup1_alpha_mean(pg);
 	for (size_t j=0; j<PRESIM_CYCLES; ++j) {
 		for (size_t k=0; k<TSTEPS_PER_CYCLE; ++k) {
 			mc_move_arc_across_all_sequential_group(pg);
 		}
+		mc_end_create_or_remove_lh_group(pg);
 	}
 	for (size_t i=0; i<SAMPLES; ++i) {
 		for (size_t j=0; j<CYCLES_PER_SAMPLE; ++j) {
 			for (size_t k=0; k<TSTEPS_PER_CYCLE; ++k) {
 				mc_move_arc_across_all_sequential_group(pg);
 			}
+			mc_end_create_or_remove_lh_group(pg);
 		}
+		poll_or_write_reset_polygroup1_history(pg, pgh, fp);
 	}
+	fclose(fp);
 	free_polygroup1_members(pg);
 	free(pg);
+	free_polygroup1_history_members(pgh);
+	free(pgh);
 	return;
 }
 
