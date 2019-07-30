@@ -886,7 +886,7 @@ coord q_squared_high_strand(const polygroup1*const RSTRCT pg,
                             const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
-	assert(pg->c_count[p_index] > 2);
+	assert(pg->c_count[p_index] > 1);
 	const coord*const r_ptr = pg->r_coords[p_index];
 	const size_t i = 3*(pg->c_start[p_index] + pg->c_count[p_index] - 2);
 	const coord x_delta = r_ptr[i + 3] - r_ptr[i];
@@ -1069,8 +1069,8 @@ void mc_move_arc_across_all_sequential(polygroup1*const RSTRCT pg,
 		return;
 	}
 	mc_move_arc_across_low_constraint(pg, p_index);
-	const size_t c_count = pg->c_count[p_index];
-	for (size_t i=0; i<c_count; ++i) {
+	const size_t c_count_less_one = pg->c_count[p_index] - 1;
+	for (size_t i=1; i<c_count_less_one; ++i) {
 		mc_move_arc_across_mid_constraint(pg, p_index, i);
 	}
 	mc_move_arc_across_high_constraint(pg, p_index);
@@ -1214,7 +1214,8 @@ void poll_or_write_reset_polygroup1_history(const polygroup1*const RSTRCT pg,
 	assert(pg);
 	assert(pgh);
 	assert(fp);
-	if (pgh->p_entries + pg->p_count > pgh->p_allocated) {
+	if ((pgh->p_entries + pg->p_count > pgh->p_allocated) || \
+	    (pgh->c_entries + total_constraints(pg) > pgh->c_allocated)) {
 		write_reset_polygroup1_history(pgh, fp);
 	}
 	else {
@@ -1240,6 +1241,17 @@ void print_polygroup1_state(const polygroup1*const RSTRCT pg) {
 		}
 	}
 	printf("\n");
+	return;
+}
+
+void print_polygroup1_c_counts(const polygroup1*const RSTRCT pg) {
+	assert(pg);
+	const size_t p_count = pg->p_count;
+	printf("----\n");
+	for (size_t i=0; i<p_count; ++i) {
+		printf("----\nid: %ld,  p_index: %ld,  c_count: %ld\n", pg->id, i, \
+		  pg->c_count[i]);
+	}
 	return;
 }
 
@@ -1413,11 +1425,13 @@ void mc_sequential_simulation(void) {
 	  POLYGROUP1_HISTORY_MAX_TSTEPS);
 	polygroup1*const pg = create_polygroup1(POLY_COUNT, INITIAL_C_ALLOC, 1234);
 	initialize_polygroup1_alpha_mean(pg);
+	poll_or_write_reset_polygroup1_history(pg, pgh, fp);
 	for (size_t j=0; j<PRESIM_CYCLES; ++j) {
 		for (size_t k=0; k<TSTEPS_PER_CYCLE; ++k) {
 			mc_move_arc_across_all_sequential_group(pg);
 		}
 		mc_end_create_or_remove_lh_group(pg);
+		print_polygroup1_c_counts(pg);
 	}
 	for (size_t i=0; i<SAMPLES; ++i) {
 		for (size_t j=0; j<CYCLES_PER_SAMPLE; ++j) {
@@ -1425,9 +1439,11 @@ void mc_sequential_simulation(void) {
 				mc_move_arc_across_all_sequential_group(pg);
 			}
 			mc_end_create_or_remove_lh_group(pg);
+			print_polygroup1_c_counts(pg);
 		}
 		poll_or_write_reset_polygroup1_history(pg, pgh, fp);
 	}
+	write_reset_polygroup1_history(pgh, fp);
 	fclose(fp);
 	free_polygroup1_members(pg);
 	free(pg);
@@ -1439,7 +1455,10 @@ void mc_sequential_simulation(void) {
 
 int main() {
 
-	run_polygroup1_tests();
+	//run_polygroup1_tests();
+	initialize_global_rand_buffers_default(1024);
+	mc_sequential_simulation();
+	free_global_rand_buffers();
 
 	return 0;
 }
