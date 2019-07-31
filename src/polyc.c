@@ -29,7 +29,7 @@
 #define ARC_CE_DELTA (ARC_CREATE_END_INTERVAL - ARC_MIN)
 
 //Below is Sqrt(2 kb T / zeta)
-#define ARC_DIFFUSION_STDDEV 100.0
+#define ARC_DIFFUSION_STDDEV 10.0
 //Below is b/Sqrt(3), it is not adjustable.
 #define SPACE_STDDEV MONOMER_LENGTH*0.5773502691896258
 //Below is 3/(2b*b), it is not adjustable.
@@ -368,6 +368,27 @@ void free_polygroup1_members(polygroup1*const RSTRCT pg) {
 	return;
 }
 
+inline coord get_n_coord(const polygroup1*const RSTRCT pg, const size_t p_index,
+                  const size_t c_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(c_index > 0);
+	assert(c_index < pg->c_count[p_index]);
+	const size_t index = pg->c_start[p_index] + c_index;
+	return pg->n_coords[p_index][index];
+}
+
+inline coord get_r_coord(const polygroup1*const RSTRCT pg, const size_t p_index,
+                  const size_t c_index, const size_t dimension) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(c_index > 0);
+	assert(c_index < pg->c_count[p_index]);
+	assert(dimension < 4);
+	const size_t index = pg->c_start[p_index] + c_index + dimension;
+	return pg->r_coords[p_index][index];
+}
+
 void initialize_polygroup1_alpha_mean(polygroup1*const RSTRCT pg) {
 	assert(pg);
 	assert(pg->p_count > 0);
@@ -641,12 +662,14 @@ int mc_move_create_low_constraint(polygroup1*const RSTRCT pg,
 	}
 	const coord new_n_coord = rand_flat()*create_length + ARC_MIN;
 	const coord strand_length = arc_low - new_n_coord;
+	assert(strand_length > ARC_MIN);
 	const coord*const r_coords = pg->r_coords[p_index];
 	const coord space_stddev_strand = SPACE_STDDEV*sqrt(strand_length);
+	const size_t r_end_index = 3*end_index;
 	const coord coords_new[4] = {
-		space_stddev_strand*rand_gaussian() + r_coords[end_index],
-		space_stddev_strand*rand_gaussian() + r_coords[end_index + 1],
-		space_stddev_strand*rand_gaussian() + r_coords[end_index + 2],
+		space_stddev_strand*rand_gaussian() + r_coords[r_end_index],
+		space_stddev_strand*rand_gaussian() + r_coords[r_end_index + 1],
+		space_stddev_strand*rand_gaussian() + r_coords[r_end_index + 2],
 		new_n_coord
 	};
 	create_low_constraint(pg, p_index, coords_new);
@@ -669,13 +692,15 @@ int mc_move_create_high_constraint(polygroup1*const RSTRCT pg,
 		}
 	}
 	const coord new_n_coord = ARC_MAX - (rand_flat()*create_length + ARC_MIN);
-	const coord strand_length = new_n_coord - arc_high;
+	const coord strand_length = new_n_coord - pg->n_coords[p_index][end_index];
+	assert(strand_length > ARC_MIN);
 	const coord*const r_coords = pg->r_coords[p_index];
 	const coord space_stddev_strand = SPACE_STDDEV*sqrt(strand_length);
+	const size_t r_end_index = 3*end_index;
 	const coord coords_new[4] = {
-		space_stddev_strand*rand_gaussian() + r_coords[end_index],
-		space_stddev_strand*rand_gaussian() + r_coords[end_index + 1],
-		space_stddev_strand*rand_gaussian() + r_coords[end_index + 2],
+		space_stddev_strand*rand_gaussian() + r_coords[r_end_index],
+		space_stddev_strand*rand_gaussian() + r_coords[r_end_index + 1],
+		space_stddev_strand*rand_gaussian() + r_coords[r_end_index + 2],
 		new_n_coord
 	};
 	create_high_constraint(pg, p_index, coords_new);
