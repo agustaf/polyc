@@ -385,7 +385,7 @@ inline coord get_r_coord(const polygroup1*const RSTRCT pg, const size_t p_index,
 	assert(c_index > 0);
 	assert(c_index < pg->c_count[p_index]);
 	assert(dimension < 4);
-	const size_t index = pg->c_start[p_index] + c_index + dimension;
+	const size_t index = 3*(pg->c_start[p_index] + c_index) + dimension;
 	return pg->r_coords[p_index][index];
 }
 
