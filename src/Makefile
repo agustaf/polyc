@@ -10,5 +10,5 @@ polyc: polyc.c
 
 .PHONY: clean
 clean:
-	rm -f polyc polygroup1_test.txt
+	rm -f polyc polygroup1_test.txt output_file.txt
 

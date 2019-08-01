@@ -17,7 +17,7 @@
 #define INITIAL_C_ALLOC 1024
 #define ENABLE_REALLOC 0
 #define LEFT_ALIGN 0
-#define KEEP_C_LIFETIMES 1
+#define KEEP_C_LIFETIMES 0
 
 #define ARC_MAX 1000.0
 #define ALPHA 50.0
@@ -42,6 +42,12 @@
 #define POLY_COUNT 4
 #define POLYGROUP1_HISTORY_MAX_POLY 1024
 #define POLYGROUP1_HISTORY_MAX_TSTEPS 16384
+
+#define PROBABILISTIC_C_SELECT 0
+#define PRESIM_TSTEPS 2097152
+#define SIMULATION_TSTEPS 2097152
+#define CD_MOVE_PROB 0.05
+#define SAMPLE_TSTEP_INTERVAL 16384
 
 
 
@@ -325,8 +331,8 @@ polygroup1* create_polygroup1(const size_t poly_count_in,
 	pg->c_allocated = NULL;
 	#if KEEP_C_LIFETIMES == 1
 	pg->life_tsteps = NULL;
-	pg->id = id_in;
 	#endif
+	pg->id = id_in;
 	alloc_polygroup1_members(pg, poly_count_in, c_allocated_in);
 	return pg;
 }
@@ -368,13 +374,31 @@ void free_polygroup1_members(polygroup1*const RSTRCT pg) {
 	return;
 }
 
-inline coord get_n_coord(const polygroup1*const RSTRCT pg, const size_t p_index,
-                  const size_t c_index) {
+inline size_t get_n_coord_index(const polygroup1*const RSTRCT pg,
+                                const size_t p_index, const size_t c_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	assert(c_index > 0);
 	assert(c_index < pg->c_count[p_index]);
-	const size_t index = pg->c_start[p_index] + c_index;
+	return pg->c_start[p_index] + c_index;
+}
+
+inline size_t get_r_coord_index(const polygroup1*const RSTRCT pg,
+                                const size_t p_index, const size_t c_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(c_index > 0);
+	assert(c_index < pg->c_count[p_index]);
+	return 3*(pg->c_start[p_index] + c_index);
+}
+
+inline coord get_n_coord(const polygroup1*const RSTRCT pg, const size_t p_index,
+                         const size_t c_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(c_index > 0);
+	assert(c_index < pg->c_count[p_index]);
+	const size_t index = get_n_coord_index(pg, p_index, c_index);
 	return pg->n_coords[p_index][index];
 }
 
@@ -385,7 +409,7 @@ inline coord get_r_coord(const polygroup1*const RSTRCT pg, const size_t p_index,
 	assert(c_index > 0);
 	assert(c_index < pg->c_count[p_index]);
 	assert(dimension < 4);
-	const size_t index = 3*(pg->c_start[p_index] + c_index) + dimension;
+	const size_t index = get_r_coord_index(pg, p_index, c_index) + dimension;
 	return pg->r_coords[p_index][index];
 }
 
@@ -418,23 +442,31 @@ size_t total_constraints(const polygroup1*const RSTRCT pg) {
 	return c_sum;
 }
 
+void move_constraints_to_address(polygroup1*const RSTRCT pg,
+                                 const size_t p_index, const size_t address) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	const size_t c_start = pg->c_start[p_index];
+	const size_t c_count = pg->c_count[p_index];
+	assert(address + c_count <= pg->c_allocated[p_index]);
+	memmove(pg->r_coords[p_index] + 3*address, \
+	  pg->r_coords[p_index] + 3*c_start, c_count*three_coord_size);
+	memmove(pg->n_coords[p_index] + address, \
+	  pg->n_coords[p_index] + c_start, c_count*coord_size);
+	#if KEEP_C_LIFETIMES == 1
+	memmove(pg->life_tsteps[p_index] + address, \
+	  pg->life_tsteps[p_index] + c_start, c_count*t_index_size);
+	#endif
+	pg->c_start[p_index] = address;
+	return;
+}
+
 void recenter_constraints(polygroup1*const RSTRCT pg, const size_t p_index) {
 	assert(pg);
 	assert(p_index < pg->p_count);
 	const size_t new_start = \
 	  (pg->c_allocated[p_index]/2) - (pg->c_count[p_index]/2);
-	memmove(pg->r_coords[p_index] + (3*new_start), \
-	  pg->r_coords[p_index] + (3*pg->c_start[p_index]), \
-	  pg->c_count[p_index]*three_coord_size);
-	memmove(pg->n_coords[p_index] + new_start, \
-	  pg->n_coords[p_index] + pg->c_start[p_index], \
-	  pg->c_count[p_index]*coord_size);
-	#if KEEP_C_LIFETIMES == 1
-	memmove(pg->life_tsteps[p_index] + new_start, \
-	  pg->life_tsteps[p_index] + pg->c_start[p_index], \
-	  pg->c_count[p_index]*t_index_size);
-	#endif
-	pg->c_start[p_index] = new_start;
+	move_constraints_to_address(pg, p_index, new_start);
 	return;
 }
 
@@ -666,6 +698,7 @@ int mc_move_create_low_constraint(polygroup1*const RSTRCT pg,
 	const coord*const r_coords = pg->r_coords[p_index];
 	const coord space_stddev_strand = SPACE_STDDEV*sqrt(strand_length);
 	const size_t r_end_index = 3*end_index;
+	//Does passing the coords_new array to a function cause a problem?
 	const coord coords_new[4] = {
 		space_stddev_strand*rand_gaussian() + r_coords[r_end_index],
 		space_stddev_strand*rand_gaussian() + r_coords[r_end_index + 1],
@@ -950,7 +983,13 @@ int mc_move_arc_across_low_constraint(polygroup1*const RSTRCT pg,
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	#if PROBABILISTIC_C_SELECT == 1
+	const coord diffusion_factor = \
+	  ARC_DIFFUSION_STDDEV*((coord) pg->c_count[p_index]);
+	#else
+	const coord diffusion_factor = ARC_DIFFUSION_STDDEV;
+	#endif
+	const coord delta_arc = diffusion_factor*rand_gaussian();
 	const coord new_arc_coord =  delta_arc + pg->n_coords[p_index][index];
 	const coord high_arc_limit = pg->n_coords[p_index][index + 1] - ARC_MIN;
 	if (!(new_arc_coord > ARC_MIN) || !(new_arc_coord < high_arc_limit)) {
@@ -984,7 +1023,13 @@ int mc_move_arc_across_high_constraint(polygroup1*const RSTRCT pg,
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	#if PROBABILISTIC_C_SELECT == 1
+	const coord diffusion_factor = \
+	  ARC_DIFFUSION_STDDEV*((coord) pg->c_count[p_index]);
+	#else
+	const coord diffusion_factor = ARC_DIFFUSION_STDDEV;
+	#endif
+	const coord delta_arc = diffusion_factor*rand_gaussian();
 	const coord new_arc_coord =  delta_arc + pg->n_coords[p_index][index];
 	const coord low_arc_limit = pg->n_coords[p_index][index - 1] + ARC_MIN;
 	if (!(new_arc_coord > low_arc_limit) || \
@@ -1023,7 +1068,13 @@ int mc_move_arc_across_mid_constraint(polygroup1*const RSTRCT pg,
 	#if KEEP_C_LIFETIMES == 1
 	++(pg->life_tsteps[p_index][index]);
 	#endif
-	const coord delta_arc = ARC_DIFFUSION_STDDEV*rand_gaussian();
+	#if PROBABILISTIC_C_SELECT == 1
+	const coord diffusion_factor = \
+	  ARC_DIFFUSION_STDDEV*((coord) pg->c_count[p_index]);
+	#else
+	const coord diffusion_factor = ARC_DIFFUSION_STDDEV;
+	#endif
+	const coord delta_arc = diffusion_factor*rand_gaussian();
 	const coord new_arc_coord = delta_arc + pg->n_coords[p_index][index];
 	const coord low_arc_limit = pg->n_coords[p_index][index - 1] + ARC_MIN;
 	const coord high_arc_limit = pg->n_coords[p_index][index + 1] - ARC_MIN;
@@ -1435,6 +1486,22 @@ void run_polygroup1_tests(void) {
 	const coord q_sq_mid = q_squared(pg, 0, 1);
 	printf("Q squared index 1 strand = %f\n\n", q_sq_mid);
 
+	printf("Moving polymer data to index 0.\n");
+	move_constraints_to_address(pg, 0, 0);
+	print_polygroup1_state(pg);
+
+	printf("Testing recenter-if-needed functionality.\n");
+	recenter_constraints_if_needed(pg, 0);
+	print_polygroup1_state(pg);
+
+	printf("Moving polymer data to index 28.\n");
+	move_constraints_to_address(pg, 0, 28);
+	print_polygroup1_state(pg);
+
+	printf("Testing recenter-if-needed functionality.\n");
+	recenter_constraints_if_needed(pg, 0);
+	print_polygroup1_state(pg);
+
 
 	free_polygroup1_members(pg);
 	free(pg);
@@ -1509,6 +1576,93 @@ void mc_sequential_simulation(void) {
 	return;
 }
 
+void probabilistic_choose_and_run_mc_move(polygroup1*const pg,
+                                          const size_t p_index) {
+	assert(pg);
+	assert(p_index < pg->p_count);
+	assert(PROBABILISTIC_C_SELECT == 1);
+	if (rand_flat() < CD_MOVE_PROB) {
+		//Constraint create/destroy move chosen.
+		if (rand_flat() < 0.5) {
+			//Low polymer end selected.
+			if (rand_flat() < 0.5) {
+				//Destroy move selected.
+				mc_move_remove_low_constraint(pg, p_index);
+			}
+			else {
+				//Create move selected.
+				mc_move_create_low_constraint(pg, p_index);
+			}
+		}
+		else {
+			//High polymer end selected.
+			if (rand_flat() < 0.5) {
+				//Destroy move selected.
+				mc_move_remove_high_constraint(pg, p_index);
+			}
+			else {
+				//Create move selected.
+				mc_move_create_high_constraint(pg, p_index);
+			}
+		}
+	}
+	else {
+		//Arc diffusion move selected.
+		const size_t c_count = pg->c_count[p_index];
+		if (c_count == 1) {
+			mc_move_arc_across_single_constraint(pg, p_index);
+		}
+		else {
+			const size_t c_index = (size_t) rand_flat()*((double) c_count);
+			if (c_index == 0) {
+				mc_move_arc_across_low_constraint(pg, p_index);
+			}
+			else if (c_index == (c_count - 1)) {
+				mc_move_arc_across_high_constraint(pg, p_index);
+			}
+			else {
+				mc_move_arc_across_mid_constraint(pg, p_index, c_index);
+			}
+		}
+	}
+	return;
+}
+
+void mc_full_probabilistic_simulation(void) {
+	assert(rand_system_prepared());
+	assert(PROBABILISTIC_C_SELECT == 1);
+	FILE*const fp = fopen("output_file.txt", "w");
+	polygroup1_history*const pgh = \
+	  create_polygroup1_history(POLYGROUP1_HISTORY_MAX_POLY, \
+	  POLYGROUP1_HISTORY_MAX_TSTEPS);
+	polygroup1*const pg = create_polygroup1(POLY_COUNT, INITIAL_C_ALLOC, 1234);
+	initialize_polygroup1_alpha_mean(pg);
+	poll_or_write_reset_polygroup1_history(pg, pgh, fp);
+	const size_t p_count = pg->p_count;
+	for (t_index i=(pg->tsteps); i<PRESIM_TSTEPS; i=(pg->tsteps)) {
+		for (size_t j=0; j<p_count; ++j) {
+			probabilistic_choose_and_run_mc_move(pg, j);
+		}
+	}
+	const t_index limit = SIMULATION_TSTEPS + PRESIM_TSTEPS;
+	for (t_index i=(pg->tsteps); i<limit; i=(pg->tsteps)) {
+		for (size_t j=0; j<p_count; ++j) {
+			probabilistic_choose_and_run_mc_move(pg, j);
+		}
+		if ((pg->tsteps)%SAMPLE_TSTEP_INTERVAL == 0) {
+			print_polygroup1_c_counts(pg);
+			poll_or_write_reset_polygroup1_history(pg, pgh, fp);
+		}
+	}
+	write_reset_polygroup1_history(pgh, fp);
+	fclose(fp);
+	free_polygroup1_members(pg);
+	free(pg);
+	free_polygroup1_history_members(pgh);
+	free(pgh);
+	return;
+}
+
 
 int main() {
 
@@ -1517,6 +1671,7 @@ int main() {
 	initialize_global_rand_buffers_default(16384);
 	//rand_gaussian_test(1000);
 	mc_sequential_simulation();
+	//mc_full_probabilistic_simulation();
 	free_global_rand_buffers();
 
 
