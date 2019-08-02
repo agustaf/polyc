@@ -29,7 +29,7 @@
 #define ARC_CE_DELTA (ARC_CREATE_END_INTERVAL - ARC_MIN)
 
 //Below is Sqrt(2 kb T / zeta)
-#define ARC_DIFFUSION_STDDEV 10.0
+#define ARC_DIFFUSION_STDDEV 0.1
 //Below is b/Sqrt(3), it is not adjustable.
 #define SPACE_STDDEV MONOMER_LENGTH*0.5773502691896258
 //Below is 3/(2b*b), it is not adjustable.
@@ -37,7 +37,7 @@
 
 #define SAMPLES 128
 #define CYCLES_PER_SAMPLE 128
-#define TSTEPS_PER_CYCLE 128
+#define TSTEPS_PER_CYCLE 1024
 #define PRESIM_CYCLES 1024
 #define POLY_COUNT 4
 #define POLYGROUP1_HISTORY_MAX_POLY 1024
