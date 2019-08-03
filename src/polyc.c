@@ -745,10 +745,14 @@ int mc_move_remove_low_constraint(polygroup1*const RSTRCT pg,
 	assert(pg);
 	assert(p_index < pg->p_count);
 	if (pg->c_count[p_index] < 2) {
+		return 3;
+	}
+	const size_t low_address = pg->c_start[p_index];
+	const coord low_arc = pg->n_coords[p_index][low_address];
+	if (low_arc > ARC_CREATE_END_INTERVAL) {
 		return 2;
 	}
-	const size_t index = pg->c_start[p_index] + 1;
-	const coord n_star = pg->n_coords[p_index][index] - 2.0*ARC_MIN;
+	const coord n_star = pg->n_coords[p_index][low_address + 1] - 2.0*ARC_MIN;
 	const coord ne_star = (n_star < ARC_CE_DELTA) ? n_star : ARC_CE_DELTA;
 	if (ne_star > ALPHA) {
 		if (rand_flat() > ALPHA/((double) ne_star)) {
@@ -764,10 +768,15 @@ int mc_move_remove_high_constraint(polygroup1*const RSTRCT pg,
 	assert(pg);
 	assert(p_index < pg->p_count);
 	if (pg->c_count[p_index] < 2) {
+		return 3;
+	}
+	const size_t high_address = pg->c_start[p_index] + pg->c_count[p_index] - 1;
+	const coord high_arc = ARC_MAX - pg->n_coords[p_index][high_address];
+	if (high_arc > ARC_CREATE_END_INTERVAL) {
 		return 2;
 	}
-	const size_t index = pg->c_start[p_index] + pg->c_count[p_index] - 2;
-	const coord n_star = (ARC_MAX - pg->n_coords[p_index][index]) - 2.0*ARC_MIN;
+	const coord n_star = \
+	  (ARC_MAX - pg->n_coords[p_index][high_address - 1]) - 2.0*ARC_MIN;
 	const coord ne_star = (n_star < ARC_CE_DELTA) ? n_star : ARC_CE_DELTA;
 	if (ne_star > ALPHA) {
 		if (rand_flat() > ALPHA/((double) ne_star)) {
@@ -1272,7 +1281,7 @@ void write_reset_polygroup1_history(polygroup1_history*const RSTRCT pgh,
 		const size_t c_count = pgh->c_count[i];
 		for (size_t j=0; j<c_count; ++j, ++c_entry) {
 			const size_t three_c_entry = 3*c_entry;
-			fprintf(fp, "%ld %ld %ld %f %f %f %f\n", \
+			fprintf(fp, "%ld,%ld,%ld,%f,%f,%f,%f\n", \
 			  pgh->pg_id[i], \
 			  pgh->p_index[i], \
 			  pgh->t_steps[i], \
@@ -1542,6 +1551,7 @@ void run_polygroup1_tests(void) {
 
 void mc_sequential_simulation(void) {
 	assert(rand_system_prepared());
+	assert(PROBABILISTIC_C_SELECT == 0);
 	FILE*const fp = fopen("output_file.txt", "w");
 	polygroup1_history*const pgh = \
 	  create_polygroup1_history(POLYGROUP1_HISTORY_MAX_POLY, \
@@ -1563,7 +1573,7 @@ void mc_sequential_simulation(void) {
 				mc_move_arc_across_all_sequential_group(pg);
 			}
 			mc_end_create_or_remove_lh_group(pg);
-			print_polygroup1_c_counts(pg);
+			//print_polygroup1_c_counts(pg);
 		}
 		poll_or_write_reset_polygroup1_history(pg, pgh, fp);
 	}
